@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -124,6 +124,15 @@ class RepairRequest(BaseModel):
 class ExportRequest(BaseModel):
     events: list[Event] = Field(default_factory=list)
     include_state: bool = True
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class RepairDecisionRequest(BaseModel):
+    decision: Literal["approve", "reject"]
 
 
 class ScenarioRun(BaseModel):

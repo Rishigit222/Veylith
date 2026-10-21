@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0b0f14" />
-    <meta name="description" content="Chronicle Guard temporal authorization verifier" />
-    <title>Chronicle Guard // Temporal Verification Console</title>
+    <meta name="description" content="Veylith temporal safety assurance for autonomous agents" />
+    <title>Veylith // Temporal Safety Console</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -15,7 +15,7 @@
           <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
           <div>
             <div class="eyebrow">TEMPORAL AUTHORITY</div>
-            <div class="brand-name">CHRONICLE<span>GUARD</span></div>
+            <div class="brand-name">VEYLI<span>TH</span></div>
           </div>
         </div>
 
@@ -30,7 +30,8 @@
 
         <nav class="nav-groups">
           <div class="nav-label">CONTROL ROOM</div>
-          <button class="nav-item active" type="button" data-view="overview"><span class="nav-icon">⌂</span><span>Overview</span><kbd>G O</kbd></button>
+           <button class="nav-item active" type="button" data-view="overview"><span class="nav-icon">⌂</span><span>Overview</span><kbd>G O</kbd></button>
+           <button class="nav-item" type="button" data-view="runs"><span class="nav-icon">▤</span><span>Agent Runs</span></button>
           <button class="nav-item" type="button" data-view="scenario"><span class="nav-icon">◈</span><span>Scenario Lab</span><kbd>G S</kbd></button>
           <button class="nav-item" type="button" data-view="trace"><span class="nav-icon">⌁</span><span>Execution Trace</span><span class="nav-badge live">LIVE</span></button>
 
@@ -53,7 +54,7 @@
       <main class="main-content">
         <header class="topbar">
           <button class="icon-button mobile-menu" type="button" data-action="toggle-sidebar" aria-label="Open navigation">☰</button>
-          <div class="breadcrumbs"><span>CHRONICLE GUARD</span><b>/</b><strong id="breadcrumb">OVERVIEW</strong></div>
+          <div class="breadcrumbs"><span>VEY LITH</span><b>/</b><strong id="breadcrumb">OVERVIEW</strong></div>
           <div class="topbar-actions">
             <div class="connection-pill"><span class="status-dot online"></span><span>API CONNECTED</span><span class="mono">42ms</span></div>
             <button class="icon-button" type="button" data-action="refresh" aria-label="Refresh data">↻</button>
@@ -84,7 +85,9 @@
              <div class="lower-grid"><article class="panel compact-panel"><div class="panel-heading"><div><span class="eyebrow">RECENT ACTIVITY</span><h2>Latest decisions</h2></div><button class="text-button" data-view="trace">View trace →</button></div><div class="table-scroll"><table class="data-table"><thead><tr><th>DECISION</th><th>SUBJECT</th><th>RESULT</th><th>AGE</th></tr></thead><tbody id="recent-decisions"></tbody></table></div></article><article class="panel compact-panel health-panel"><div class="panel-heading"><div><span class="eyebrow">INTEGRATION STATUS</span><h2>Data sources</h2></div><span class="status-badge warning">SIMULATOR ONLY</span></div><div class="integration-row"><span class="integration-logo cyan">◎</span><span><b>Deterministic event simulator</b><small>active / isolated</small></span><span class="health-value"><i></i> local</span></div><div class="integration-row"><span class="integration-logo muted">R</span><span><b>Ring official API</b><small>optional / unconfigured</small></span><span class="health-value">—</span></div><p class="panel-copy">No live devices, visitor identities, camera feeds, or physical actions are used by the adversarial demo.</p><button class="button ghost full" data-view="integrations">Inspect integration status</button></article></div>
           </section>
 
-          <section class="view" data-view-panel="scenario" aria-labelledby="scenario-title">
+           <section class="view" data-view-panel="runs" aria-labelledby="runs-title"><div class="page-heading split-heading"><div><div class="eyebrow cyan">CONTROL ROOM / 02</div><h1 id="runs-title">Agent execution history</h1><p class="lede">Inspect deterministic runs, outcomes, verifier versions, and evidence hashes.</p></div><div class="heading-actions"><button class="button secondary" data-action="refresh">↻ Refresh runs</button></div></div><div class="panel compact-panel"><div class="panel-heading"><div><span class="eyebrow">RUN LEDGER</span><h2>Recent executions</h2></div><span class="status-badge ready">API-BACKED</span></div><div class="table-scroll"><table class="data-table"><thead><tr><th>RUN</th><th>SCENARIO</th><th>OUTCOME</th><th>VIOLATIONS</th><th>EVIDENCE</th></tr></thead><tbody id="agent-runs-table"><tr><td colspan="5">Loading agent runs…</td></tr></tbody></table></div></div></section>
+
+           <section class="view" data-view-panel="scenario" aria-labelledby="scenario-title">
             <div class="page-heading split-heading"><div><div class="eyebrow cyan">CONTROL ROOM / 02</div><h1 id="scenario-title">Scenario lab</h1><p class="lede">Compose adversarial event sequences and replay them against the verifier.</p></div><div class="heading-actions"><button class="button secondary" data-action="load-scenario">＋ New scenario</button><button class="button primary" data-action="run-scenario">▶ Execute scenario</button></div></div>
             <div class="scenario-layout"><div class="panel scenario-list"><div class="panel-heading"><div><span class="eyebrow">SCENARIO CATALOG</span><h2>Replay library</h2></div><span class="count-pill">12 total</span></div><label class="search-box"><span>⌕</span><input id="scenario-search" placeholder="Filter scenarios" /><kbd>/</kbd></label><div class="scenario-items"><button class="scenario-item selected" data-scenario="revoked"><span class="scenario-icon danger">!</span><span><b>Revoked approval race</b><small>Authorization / TOCTOU</small></span><span class="scenario-state">READY</span></button><button class="scenario-item" data-scenario="clock"><span class="scenario-icon violet">◷</span><span><b>Clock skew window</b><small>Temporal / boundary drift</small></span><span class="scenario-state">READY</span></button><button class="scenario-item" data-scenario="replay"><span class="scenario-icon amber">↺</span><span><b>Nonce replay attempt</b><small>Integrity / duplicate claim</small></span><span class="scenario-state">READY</span></button><button class="scenario-item" data-scenario="delegation"><span class="scenario-icon cyan">⌁</span><span><b>Delegation chain break</b><small>Identity / stale grant</small></span><span class="scenario-state">READY</span></button><button class="scenario-item" data-scenario="custom"><span class="scenario-icon muted">＋</span><span><b>Custom sequence</b><small>Start from an empty canvas</small></span><span class="scenario-state">NEW</span></button></div></div><div class="panel scenario-editor"><div class="panel-heading"><div><span class="eyebrow">ACTIVE SCENARIO / <span id="scenario-id">SCN-042</span></span><h2 id="scenario-name">Revoked approval race</h2></div><span class="status-badge ready" id="scenario-status">READY TO RUN</span></div><div class="scenario-description" id="scenario-description">A valid approval is revoked after the caller checks it but before the protected operation commits. The verifier must reject the stale authorization and preserve a complete causal trail.</div><div class="editor-toolbar"><span class="toolbar-label">EVENT SEQUENCE</span><button class="text-button" data-action="add-event">＋ Add event</button><button class="icon-button tiny" data-action="duplicate-scenario" aria-label="Duplicate scenario">⧉</button></div><div class="event-stack" id="event-stack"></div><div class="editor-footer"><div class="editor-note"><span class="info-dot">i</span><span>Events are evaluated in logical time. Dragging is available when connected to the API.</span></div><button class="button primary" data-action="run-scenario">▶ Execute sequence</button></div></div></div>
           </section>

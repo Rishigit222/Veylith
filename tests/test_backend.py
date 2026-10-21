@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+import chronicle_guard.app as app_module
 from chronicle_guard.app import app
 from chronicle_guard.model import Event, EventKind, RepairRequest
 from chronicle_guard.policy import evaluate_baseline
@@ -106,3 +107,81 @@ def test_static_console_compatibility_routes_are_json_backed():
     assert run.status_code == 200
     assert run.json()["outcome"] == "REJECTED"
     assert run.json()["events"][0]["event_id"] == "e1"
+
+
+def test_demo_login_and_me(monkeypatch):
+    monkeypatch.setenv("CHRONICLE_DEMO_REVIEWER_EMAIL", "reviewer@example.com")
+    monkeypatch.setenv("CHRONICLE_DEMO_REVIEWER_PASSWORD", "demo-password")
+    login = client.post("/api/auth/login", json={"email": "reviewer@example.com", "password": "demo-password"})
+    assert login.status_code == 200
+    body = login.json()
+    assert body["token_type"] == "bearer"
+    assert body["user"]["role"] == "reviewer"
+    me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
+    assert me.status_code == 200
+    assert me.json() == body["user"]
+
+
+def test_auth_failure_returns_401(monkeypatch):
+    monkeypatch.setenv("CHRONICLE_DEMO_REVIEWER_EMAIL", "reviewer@example.com")
+    monkeypatch.setenv("CHRONICLE_DEMO_REVIEWER_PASSWORD", "demo-password")
+    assert client.get("/api/auth/me").status_code == 401
+    assert client.get("/api/auth/me", headers={"Authorization": "Bearer invalid"}).status_code == 401
+    finding_id = client.get("/api/chronicle/repairs").json()["findings"][0]["finding_id"]
+    response = client.post(f"/api/chronicle/repairs/{finding_id}/decision", json={"decision": "approve"})
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_client_records_come_from_scenarios_verifier_and_evidence():
+    runs = client.get("/api/chronicle/agent-runs")
+    notifications = client.get("/api/chronicle/notifications")
+    repairs = client.get("/api/chronicle/repairs")
+    assert runs.status_code == notifications.status_code == repairs.status_code == 200
+    run = next(item for item in runs.json()["runs"] if item["scenario_id"] == "SCN-042")
+    assert run["outcome"] == "REJECTED"
+    assert "revoked_approval_race" in run["violation_codes"]
+    assert run["evidence_format"] == "chronicle-guard-evidence-v1"
+    assert any(item["finding_id"].startswith("SCN-042:") and item["code"] == "revoked_approval_race" for item in repairs.json()["findings"])
+    assert any(item["scenario_id"] == "SCN-042" and item["severity"] == "critical" for item in notifications.json()["notifications"])
+
+
+def test_reviewer_can_approve_or_reject_findings(monkeypatch):
+    monkeypatch.setenv("CHRONICLE_DEMO_REVIEWER_EMAIL", "reviewer@example.com")
+    monkeypatch.setenv("CHRONICLE_DEMO_REVIEWER_PASSWORD", "demo-password")
+    token = client.post("/api/auth/login", json={"email": "reviewer@example.com", "password": "demo-password"}).json()["access_token"]
+    findings = client.get("/api/chronicle/repairs").json()["findings"]
+    approved_id = findings[0]["finding_id"]
+    rejected_id = findings[1]["finding_id"]
+    headers = {"Authorization": f"Bearer {token}"}
+    approved = client.post(f"/api/chronicle/repairs/{approved_id}/decision", headers=headers, json={"decision": "approve"})
+    rejected = client.post(f"/api/chronicle/repairs/{rejected_id}/decision", headers=headers, json={"decision": "reject"})
+    assert approved.status_code == rejected.status_code == 200
+    assert approved.json()["status"] == "APPROVED"
+    assert rejected.json()["status"] == "REJECTED"
+    assert client.get("/api/chronicle/repairs").json()["findings"][0]["status"] == "APPROVED"
+
+
+def test_valid_non_reviewer_session_returns_403_for_decision(monkeypatch):
+    finding_id = client.get("/api/chronicle/repairs").json()["findings"][0]["finding_id"]
+    app_module._SESSIONS["viewer-session"] = {"id": "demo-viewer", "email": "viewer@example.com", "name": "Viewer", "role": "viewer"}
+    response = client.post(
+        f"/api/chronicle/repairs/{finding_id}/decision",
+        headers={"Authorization": "Bearer viewer-session"},
+        json={"decision": "approve"},
+    )
+    assert response.status_code == 403
+
+
+def test_mobile_scenario_ids_are_all_runnable():
+    catalog = client.get("/api/chronicle/scenarios").json()["scenarios"]
+    assert len(catalog) == 9
+    for scenario in catalog:
+        response = client.post(f"/api/chronicle/scenarios/{scenario['id']}/run")
+        assert response.status_code == 200
+
+
+def test_health_identifies_veylith_service():
+    health = client.get("/health").json()
+    assert health["service"] == "veylith"
+    assert health["status"] == "ok"

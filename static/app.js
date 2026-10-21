@@ -1,11 +1,14 @@
-/* Chronicle Guard frontend: static-first, API-ready, no build step required. */
+  /* Veylith frontend: static-first, API-connected, no build step required. */
 (() => {
   'use strict';
 
   const API_ROOT = window.CHRONICLE_API_BASE || '/api/chronicle';
+  const AUTH_ROOT = API_ROOT.replace(/\/api\/chronicle\/?$/, '/api');
   const state = {
     view: 'overview',
     scenario: 'revoked',
+    scenarioId: 'SCN-042',
+    scenarioCatalog: [],
     tracePaused: false,
     activityRange: '24h',
     loaded: {},
@@ -82,15 +85,17 @@
 
   async function loadViewData(view) {
     state.loaded[view] = true;
-    const routes = { overview: '/overview', scenario: '/scenarios', trace: '/traces/trace-7f3a', timeline: '/timeline/trace-7f3a', comparison: '/comparisons/trace-7f3a', repair: '/repairs', evidence: '/evidence/exports', integrations: '/integrations' };
+    const routes = { overview: '/overview', runs: '/agent-runs', scenario: '/scenarios', trace: '/traces/trace-7f3a', timeline: '/timeline/trace-7f3a', comparison: '/comparisons/trace-7f3a', repair: '/repairs', evidence: '/evidence/exports', integrations: '/integrations' };
     const fallback = view === 'scenario' ? { scenarios: Object.values(mocks.scenarios) } : {};
     const data = await fetchJson(routes[view], {}, fallback);
     if (data.__mock) toast('Showing local fixture data', 'error', 'The API is unavailable; actions remain previewable in this static console.');
     if (view === 'overview') { if (data.recent) renderRecent(data.recent); if (data.metrics) renderOverviewMetrics(data.metrics); }
+    if (view === 'runs') renderAgentRuns(data.runs);
     if (view === 'trace') { renderTrace(data.events || mocks.events); renderTraceSummary(data.verification, data.baseline); }
     if (view === 'timeline') renderTimeline(data.events || mocks.events);
-    if (view === 'scenario') renderScenarioCatalog(data.scenarios);
+    if (view === 'scenario') { state.scenarioCatalog = Array.isArray(data.scenarios) ? data.scenarios : []; renderScenarioCatalog(state.scenarioCatalog); }
     if (view === 'comparison') renderComparison(data);
+    if (view === 'repair') renderRepairFindings(data.findings);
     if (view === 'integrations') renderIntegrationStatus(data);
   }
 
@@ -113,8 +118,22 @@
     if (grid) grid.innerHTML = `<article class="panel integration-detail"><div class="integration-title"><span class="integration-logo cyan large">◎</span><div><h2>Deterministic event simulator</h2><span class="status-badge live">ACTIVE</span></div></div><div class="integration-url mono">in-process / chronicle_guard.scenarios</div><p class="panel-copy">The demo uses typed synthetic events and never connects to a physical Ring device.</p><button class="button ghost full" data-action="test-integration">Run source health check</button></article><article class="panel integration-detail"><div class="integration-title"><span class="integration-logo muted large">R</span><div><h2>Ring official API</h2><span class="status-badge warning">UNCONFIGURED</span></div></div><div class="integration-url mono">optional / credentials not present</div><p class="panel-copy">No Ring adapter is claimed. Configure only after official access, scopes, and hackathon eligibility are independently verified.</p><button class="button ghost full" data-action="add-integration">Review blocker</button></article>`;
   }
 
+  function renderRepairFindings(findings = []) {
+    const root = qs('.finding-list');
+    if (!root || !Array.isArray(findings) || !findings.length) return;
+    const header = root.querySelector('.panel-heading')?.outerHTML || '';
+    root.innerHTML = `${header}${findings.map((finding, index) => `<button class="finding${index === 0 ? ' selected' : ''}" data-finding-id="${esc(finding.finding_id)}"><span class="severity ${finding.code === 'revoked_approval_race' ? 'high' : 'medium'}">${finding.code === 'revoked_approval_race' ? 'H' : 'M'}</span><span><b>${esc(finding.code.replaceAll('_', ' '))}</b><small>${esc(finding.scenario_id)} · ${esc(finding.status || 'PENDING')}</small></span><span class="finding-chevron">›</span></button>`).join('')}`;
+  }
+
   function renderRecent(rows = mocks.recent) {
     qs('#recent-decisions').innerHTML = rows.map((row) => `<tr><td>${esc(row[0])}</td><td>${esc(row[1])}</td><td><span class="result ${row[2] === 'ALLOW' ? 'allow' : 'reject'}">${esc(row[2])}</span></td><td>${esc(row[3])}</td></tr>`).join('');
+  }
+
+  function renderAgentRuns(runs = []) {
+    const root = qs('#agent-runs-table');
+    if (!root) return;
+    if (!Array.isArray(runs) || !runs.length) { root.innerHTML = '<tr><td colspan="5">No agent runs returned by the API.</td></tr>'; return; }
+    root.innerHTML = runs.map((run) => `<tr><td class="mono">${esc(run.run_id || run.id || '—')}</td><td>${esc(run.name || run.scenario_id || '—')}</td><td><span class="result ${run.outcome === 'ALLOW' ? 'allow' : 'reject'}">${esc(run.outcome || 'UNKNOWN')}</span></td><td>${esc((run.violation_codes || []).join(', ') || 'none')}</td><td class="mono">${esc(String(run.evidence_hash || '').slice(0, 12) || '—')}</td></tr>`).join('');
   }
 
   function renderBars(range = '24h') {
@@ -125,6 +144,7 @@
   function scenarioKindClass(kind) { return kind.toLowerCase() === 'authority' ? 'authority' : kind.toLowerCase() === 'verify' ? 'verifier' : kind.toLowerCase() === 'commit' ? 'commit' : ''; }
 
   function renderScenario(scenario = mocks.scenarios[state.scenario]) {
+    scenario = { ...scenario, events: Array.isArray(scenario?.events) ? scenario.events : [] };
     qs('#scenario-id').textContent = scenario.id;
     qs('#scenario-name').textContent = scenario.name;
     qs('#scenario-description').textContent = scenario.description;
@@ -132,13 +152,15 @@
   }
 
   function renderScenarioCatalog(scenarios) {
-    if (!Array.isArray(scenarios)) return;
-    scenarios.forEach((scenario) => {
-      const key = Object.entries(mocks.scenarios).find(([, item]) => item.id === scenario.id)?.[0];
-      if (!key) return;
-      const node = qs(`[data-scenario="${key}"]`);
-      if (node && scenario.status) node.querySelector('.scenario-state').textContent = scenario.status;
-    });
+    if (!Array.isArray(scenarios) || !scenarios.length) return;
+    const root = qs('.scenario-items');
+    if (!root) return;
+    root.innerHTML = scenarios.map((scenario, index) => {
+      const id = scenario.id || `SCN-${index}`;
+      const selected = id === state.scenarioId ? ' selected' : '';
+      const severity = id === 'SCN-042' ? 'danger' : scenario.name?.includes('happy') ? 'cyan' : 'amber';
+      return `<button class="scenario-item${selected}" data-scenario-id="${esc(id)}"><span class="scenario-icon ${severity}">${id === 'SCN-042' ? '!' : '◈'}</span><span><b>${esc(scenario.name || id)}</b><small>${esc(scenario.description || 'Deterministic replay scenario')}</small></span><span class="scenario-state">${esc(scenario.status || 'READY')}</span></button>`;
+    }).join('');
   }
 
   function renderTrace(events = mocks.events) {
@@ -163,6 +185,44 @@
     root.innerHTML = `<div class="compare-score baseline"><span class="eyebrow">LEGACY BASELINE</span><strong>${baseline.allowed ? 'ALLOW' : 'REJECT'}</strong><small>${esc((baseline.reasons || []).join(', ') || 'presence checks passed')}</small></div><div class="compare-arrow">→<small>${baseline.allowed === verifier.valid ? 'aligned' : 'diverged'}</small></div><div class="compare-score verifier"><span class="eyebrow">CHRONICLE VERIFIER</span><strong>${verifier.valid ? 'ALLOW' : 'REJECT'}</strong><small>${esc(primary?.code || 'all invariants valid')}</small></div><div class="compare-reason"><span class="eyebrow">PRIMARY FINDING</span><b>${esc(primary?.code || 'no divergence')}</b><p>${esc(primary?.message || 'The bounded trace passed temporal checks.')}</p></div>`;
   }
 
+  async function downloadEvidence() {
+    try {
+      const data = await fetchJson('/evidence/exports');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'veylith-evidence.json';
+      link.click();
+      URL.revokeObjectURL(url);
+      toast('Evidence downloaded', 'success', 'Export generated by the FastAPI evidence endpoint.');
+    } catch (error) {
+      toast('Evidence export failed', 'error', error instanceof Error ? error.message : 'The API did not return an export.');
+    }
+  }
+
+  function openReviewerModal() {
+    openModal('Reviewer authorization required', 'Repair decisions are server-side and require a reviewer session. Enter the configured demo reviewer credentials for this local deployment.', '<label class="field"><span>EMAIL</span><input id="reviewer-email" type="email" autocomplete="username" placeholder="reviewer@example.com" /></label><label class="field"><span>PASSWORD</span><input id="reviewer-password" type="password" autocomplete="current-password" placeholder="Configured demo password" /></label><div class="modal-actions"><button class="button secondary" data-action="close-modal">Cancel</button><button class="button primary" data-action="submit-repair-review">Authorize and approve</button></div>');
+  }
+
+  async function submitRepairReview() {
+    const email = qs('#reviewer-email')?.value || '';
+    const password = qs('#reviewer-password')?.value || '';
+    const finding = (await fetchJson('/repairs', {}, { findings: [] })).findings?.[0];
+    if (!finding) { toast('No pending finding', 'error'); return; }
+    try {
+      const loginResponse = await fetch(`${AUTH_ROOT}/auth/login`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+      const login = await loginResponse.json();
+      if (!loginResponse.ok) throw new Error(login.detail || `Login failed (${loginResponse.status})`);
+      const decision = await fetchJson(`/repairs/${encodeURIComponent(finding.finding_id)}/decision`, { method: 'POST', headers: { Authorization: `Bearer ${login.access_token}` }, body: JSON.stringify({ decision: 'approve' }) });
+      closeModal();
+      toast('Repair decision recorded', 'success', `${decision.status} by ${decision.decided_by}`);
+      state.loaded.repair = false;
+    } catch (error) {
+      toast('Repair decision failed', 'error', error instanceof Error ? error.message : 'Reviewer authorization failed.');
+    }
+  }
+
   function renderTimeline(events = mocks.events) {
     const lanes = [{ label: 'CALLER', color: 'var(--cyan)' }, { label: 'AUTHORITY', color: 'var(--violet)' }, { label: 'VERIFIER', color: 'var(--amber)' }, { label: 'COMMIT', color: 'var(--lime)' }];
     const points = [18, 29, 39, 52, 66, 86];
@@ -170,7 +230,8 @@
   }
 
   async function runScenario() {
-    const scenario = mocks.scenarios[state.scenario];
+    const scenario = state.scenarioCatalog.find((item) => item.id === state.scenarioId) || mocks.scenarios[state.scenario];
+    if (!scenario) { toast('Select a scenario first', 'error'); return; }
     setView('trace');
     qs('#trace-stream').classList.add('loading');
     toast(`Executing ${scenario.name}`, 'success', 'Streaming verifier events…');
@@ -184,7 +245,7 @@
   }
 
   function openModal(title, body, actions = '') {
-    qs('#modal-content').innerHTML = `<div class="eyebrow cyan">CHRONICLE GUARD</div><h2 id="modal-title">${esc(title)}</h2><p>${body}</p>${actions ? `<div class="modal-actions">${actions}</div>` : ''}`;
+    qs('#modal-content').innerHTML = `<div class="eyebrow cyan">VEY LITH</div><h2 id="modal-title">${esc(title)}</h2><p>${body}</p>${actions ? `<div class="modal-actions">${actions}</div>` : ''}`;
     qs('#modal').hidden = false;
   }
 
@@ -193,24 +254,35 @@
   function handleAction(action, target) {
     if (action === 'toggle-sidebar') qs('#sidebar').classList.toggle('open');
     if (action === 'refresh') { state.loaded = {}; loadViewData(state.view); toast('Data refreshed', 'success'); }
-    if (action === 'run-race') { state.scenario = 'revoked'; renderScenario(); setView('scenario'); toast('Flagship race loaded', 'success', 'Press Execute sequence when ready.'); }
+    if (action === 'run-race') { state.scenario = 'revoked'; state.scenarioId = 'SCN-042'; renderScenario(); setView('scenario'); toast('Flagship race loaded', 'success', 'Press Execute sequence when ready.'); }
     if (action === 'run-scenario') runScenario();
     if (action === 'pause-trace') { state.tracePaused = !state.tracePaused; target.textContent = state.tracePaused ? '▶ Resume stream' : 'Ⅱ Pause stream'; toast(state.tracePaused ? 'Trace stream paused' : 'Trace stream resumed'); }
     if (action === 'clear-trace') { qs('#trace-stream').innerHTML = ''; toast('Trace cleared'); }
-    if (action === 'download-trace' || action === 'export-quick' || action === 'export-comparison') openModal('Export queued', 'The static console prepared this export locally. When the evidence endpoint is connected, the signed package will be generated by the backend.', '<button class="button primary" data-action="close-modal">Done</button>');
-    if (action === 'generate-export') { toast('Evidence package prepared', 'success', 'Fixture manifest: SHA-256 ready · 42 KB'); openModal('Signed package ready', 'Your evidence package is ready for download in fixture mode. Connect <code>/api/chronicle/evidence/exports</code> for server-backed signing.', '<button class="button primary" data-action="close-modal">Close</button>'); }
+    if (action === 'download-trace' || action === 'export-quick' || action === 'export-comparison' || action === 'generate-export') downloadEvidence();
     if (action === 'new-export') qs('.field input')?.focus();
     if (action === 'add-event') { mocks.scenarios[state.scenario].events.push(['CALLER', 'New event', 'Describe the event fact', 't+000ms', '']); renderScenario(); toast('Event added', 'success', 'Edit the backend payload when connected.'); }
     if (action === 'remove-event') { target.closest('.event-row')?.remove(); toast('Event removed'); }
     if (action === 'copy-code') { navigator.clipboard?.writeText('allow { approval.status == "ACTIVE"; approval.version == commit.approval_version; commit.boundary_proof != null }'); toast('Policy snippet copied'); }
-    if (action === 'approve-repair') { toast('Repair submitted for review', 'success', 'RACE-001 moved to review queue.'); }
+    if (action === 'approve-repair') openReviewerModal();
+    if (action === 'submit-repair-review') submitRepairReview();
     if (action === 'create-repair') openModal('Create repair', 'Select a finding from the queue to generate a bounded remediation patch.', '<button class="button secondary" data-action="close-modal">Cancel</button><button class="button primary" data-action="approve-repair">Create draft</button>');
     if (action === 'add-integration') openModal('Connect an integration', 'The backend can expose a connection flow here. Planned adapters: GitHub Enterprise, Vault Transit, Kafka Events, and signed webhook sources.', '<button class="button secondary" data-action="close-modal">Cancel</button><button class="button primary" data-action="close-modal">Continue</button>');
-    if (action === 'test-integration' || action === 'refresh-integrations') toast('Integration checks complete', 'success', 'All connected surfaces are nominal in fixture mode.');
-    if (action === 'notifications') openModal('Notifications', 'No unread incidents. The verifier engine has remained nominal since the last deployment.', '<button class="button primary" data-action="close-modal">Done</button>');
+    if (action === 'test-integration' || action === 'refresh-integrations') { state.loaded.integrations = false; loadViewData('integrations'); toast('Integration status refreshed', 'success', 'Simulator and Ring configuration state re-read from the API.'); }
+    if (action === 'notifications') loadNotifications();
     if (action === 'workspace' || action === 'profile') openModal(action === 'workspace' ? 'Workspace' : 'Operator profile', action === 'workspace' ? 'northstar-labs / production / us-east-1' : 'Mara K. · security engineer', '<button class="button primary" data-action="close-modal">Close</button>');
     if (action === 'zoom-in' || action === 'zoom-out') toast(action === 'zoom-in' ? 'Timeline zoomed in' : 'Timeline zoomed out');
     if (action === 'close-modal') closeModal();
+  }
+
+  async function loadNotifications() {
+    try {
+      const data = await fetchJson('/notifications');
+      const items = data.notifications || [];
+      const body = items.length ? items.slice(0, 8).map((item) => `<div class="assertion"><i>!</i><span><b>${esc(item.title || 'Veylith alert')}</b><small>${esc(item.message || '')}</small></span></div>`).join('') : '<p>No verifier notifications returned by the API.</p>';
+      openModal('Notifications', body, '<button class="button primary" data-action="close-modal">Done</button>');
+    } catch (error) {
+      toast('Notifications unavailable', 'error', error instanceof Error ? error.message : 'The API did not return notifications.');
+    }
   }
 
   document.addEventListener('click', (event) => {
@@ -218,8 +290,10 @@
     if (viewButton) { setView(viewButton.dataset.view); return; }
     const actionButton = event.target.closest('[data-action]');
     if (actionButton) { handleAction(actionButton.dataset.action, actionButton); return; }
-    const scenarioButton = event.target.closest('[data-scenario]');
-    if (scenarioButton) { state.scenario = scenarioButton.dataset.scenario; qsa('.scenario-item').forEach((item) => item.classList.toggle('selected', item === scenarioButton)); renderScenario(); return; }
+    const scenarioButton = event.target.closest('[data-scenario-id]');
+    if (scenarioButton) { state.scenarioId = scenarioButton.dataset.scenarioId; const match = Object.entries(mocks.scenarios).find(([, item]) => item.id === state.scenarioId); if (match) state.scenario = match[0]; qsa('.scenario-item').forEach((item) => item.classList.toggle('selected', item === scenarioButton)); const selected = state.scenarioCatalog.find((item) => item.id === state.scenarioId) || mocks.scenarios[state.scenario]; renderScenario(selected ? { id: selected.id, name: selected.name, description: selected.description, events: mocks.scenarios[state.scenario]?.events || [] } : undefined); return; }
+    const findingButton = event.target.closest('[data-finding-id]');
+    if (findingButton) { qsa('.finding').forEach((item) => item.classList.toggle('selected', item === findingButton)); toast('Finding selected', 'success', findingButton.dataset.findingId); return; }
     const rangeButton = event.target.closest('[data-range]');
     if (rangeButton) { state.activityRange = rangeButton.dataset.range; qsa('[data-range]').forEach((button) => button.classList.toggle('selected', button === rangeButton)); renderBars(state.activityRange); }
   });
@@ -230,6 +304,7 @@
     if (event.key.toLowerCase() === 'o' && event.altKey) setView('overview');
   });
 
+  loadViewData('overview');
   renderRecent();
   renderBars();
   renderScenario();

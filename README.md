@@ -1,14 +1,16 @@
-# Chronicle Guard
+# Veylith
 
 **Temporal Safety Assurance for Autonomous Agents**
 
 Every action may be permitted. Is the entire sequence safe?
 
-Chronicle Guard is a deterministic engineering laboratory for comparing a
+Veylith is a deterministic engineering laboratory for comparing a
 transparent per-action authorization baseline with an independent temporal
 verifier. It models approval lifecycles, event-time versus processing-time,
 replay, stale evidence, duplicate delivery, uncertain retries, and untrusted
-event content. The flagship demonstration is the revoked-approval race.
+ event content. The flagship demonstration is the revoked-approval race. The
+ Python package remains `chronicle_guard` for compatibility with the working
+ verifier imports.
 
 ## Run
 
@@ -19,6 +21,10 @@ python -m uvicorn chronicle_guard.app:app --reload
 
 The application is available at `http://127.0.0.1:8000`, with OpenAPI at
 `/docs` and a health endpoint at `/health`.
+
+The web app is served by the same FastAPI process. Repair-review decisions use
+SQLite at `VEYLITH_DATA_PATH` (default `data/veylith.sqlite3`); demo sessions
+remain in memory and expire on process restart.
 
 ## API overview
 
@@ -31,6 +37,12 @@ The application is available at `http://127.0.0.1:8000`, with OpenAPI at
 - `POST /api/counterexample/reduce`
 - `POST /api/repair/validate`
 - `POST /api/export`
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `GET /api/chronicle/agent-runs`
+- `GET /api/chronicle/notifications`
+- `GET /api/chronicle/repairs`
+- `POST /api/chronicle/repairs/{finding_id}/decision`
 
 Compatibility console routes are under `/api/chronicle/*` and power the static
 browser UI. The UI explicitly reports **simulator-only** integration status.
@@ -55,3 +67,18 @@ credentials or adapter, so it does not claim a Ring integration. See:
 - `docs/prior-art-review.md`
 - `docs/temporal-safety-model.md`
 - `docs/final-audit.md`
+
+## Mobile
+
+The Expo client lives in `apps/mobile` and uses the same API. Configure
+`EXPO_PUBLIC_API_BASE_URL`, then run:
+
+```bash
+cd apps/mobile
+npm install
+npm run typecheck
+npx expo start
+```
+
+Android emulators reach a host-local API at `http://10.0.2.2:8000`; iOS
+simulators normally use `http://127.0.0.1:8000`.

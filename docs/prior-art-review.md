@@ -26,13 +26,32 @@ Success criterion: the baseline returns `allowed=true` for `revoked_approval_rac
 
 ## Ring resources and limitations
 
-The project reviewed the official Ring developer portal and the hackathon listing. Ring integrations are access-controlled and may require an approved account, application registration, OAuth scopes, and review. No Ring credentials or verified API contract were available in this workspace on 2026-10-21. Therefore the application reports **simulator-only** and does not claim a Ring integration. No physical devices, visitor identities, camera feeds, or live security actions are used.
+The current official Ring developer portal says developers register through the
+Amazon developer portal, obtain credentials, configure app metadata, link Ring
+test accounts, and complete certification steps before release. It describes
+access to motion events, doorbell presses, device status, event history, and
+video capabilities through Ring APIs or the Ring MCP Server. Ring's official
+documentation also now lists a Developers Playground for API testing and event
+simulation; it still distinguishes sandbox testing from production deployment.
+The Ring Appstore support documentation says app connections require a Ring
+account owner and at least one connected Ring camera or doorbell, and may
+require a subscription depending on the integration. The Amazon Developer
+homepage currently advertises the Build, Ship, Shape hackathon with Ring as one
+of the participating platforms and lists October 23, 2026 as the submission
+close date.
+
+No Ring credentials, test account, physical device, or verified application
+registration were available in this workspace on 2026-10-21. Therefore the
+application reports **simulator-only** and does not claim a Ring integration.
+No physical devices, visitor identities, camera feeds, or live security actions
+are used.
 
 Sources reviewed:
 
 - Amazon Developer Challenge listing: `https://developer.amazon.com/alexa/alexa-skills-kit/amazon-developer-challenge`
-- Ring developer portal: `https://ring.com/developer`
-- Ring developer getting started: `https://ring.com/developer/get-started`
+- Ring developer portal: `https://developer.ring.com/`
+- Ring Appstore integration requirements: `https://uk.ring.com/support/articles/e2sg9/Ring-appstore-third-party-integrations`
+- Ring Data Portability documentation: `https://ring.com/de/de/data-portability`
 - AgentDojo: `https://agentdojo.spylab.ai/`
 - Promptfoo: `https://www.promptfoo.dev/`
 - Inspect AI: `https://inspect.aisi.org.uk/`

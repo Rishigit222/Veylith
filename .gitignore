@@ -6,3 +6,6 @@ __pycache__/
 *.egg-info/
 *.log
 NUL
+data/
+apps/mobile/node_modules/
+apps/mobile/.expo/

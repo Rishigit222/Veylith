@@ -1,20 +1,31 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
 from pathlib import Path
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
 from .export import evidence_export
-from .model import ActionRequest, ExportRequest, RepairRequest, ReplayRequest
+from .model import ActionRequest, ExportRequest, LoginRequest, RepairDecisionRequest, RepairRequest, ReplayRequest
 from .policy import evaluate_baseline
 from .repair import validate_repair
 from .scenarios import SCENARIOS, list_scenarios
 from .state import replay
+from .storage import get_repair_decision, save_repair_decision
 from .verifier import enforce_temporal, reduce_counterexample, verify
 
-app = FastAPI(title="Chronicle Guard", version="0.1.0")
+app = FastAPI(title="Veylith", version="0.2.0")
+
+# This backend intentionally uses a tiny in-memory store for the demo clients.
+# It is reset on process restart and is not a production identity or database.
+_SESSIONS: dict[str, dict[str, str]] = {}
+_BEARER = HTTPBearer(auto_error=False)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.is_dir():
@@ -25,10 +36,15 @@ if STATIC_DIR.is_dir():
         return FileResponse(STATIC_DIR / "index.html")
 
 CHRONICLE_IDS = {
+    "SCN-001": "happy_path",
     "SCN-042": "revoked_approval_race",
     "SCN-017": "out_of_order",
     "SCN-031": "duplicate_event",
     "SCN-028": "stale_approval",
+    "SCN-007": "execute_without_approval",
+    "SCN-019": "stale_evidence",
+    "SCN-023": "network_timeout",
+    "SCN-029": "untrusted_instruction",
 }
 
 
@@ -55,9 +71,121 @@ def _trace_events(events):
     } for event in events]
 
 
+def _reviewer_credentials() -> tuple[str, str]:
+    email = os.getenv("CHRONICLE_DEMO_REVIEWER_EMAIL", "").strip()
+    password = os.getenv("CHRONICLE_DEMO_REVIEWER_PASSWORD", "")
+    return email, password
+
+
+def _auth_error(detail: str = "Bearer authentication is required") -> HTTPException:
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail, headers={"WWW-Authenticate": "Bearer"})
+
+
+def _current_user(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_BEARER)]) -> dict[str, str]:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise _auth_error()
+    user = _SESSIONS.get(credentials.credentials)
+    if user is None:
+        raise _auth_error("Invalid or expired demo session")
+    return user
+
+
+def _reviewer_user(user: Annotated[dict[str, str], Depends(_current_user)]) -> dict[str, str]:
+    if user.get("role") != "reviewer":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Reviewer role required")
+    return user
+
+
+def _scenario_records() -> list[dict[str, Any]]:
+    """Build client records from the actual deterministic verifier outputs."""
+    records: list[dict[str, Any]] = []
+    for name, factory in SCENARIOS.items():
+        scenario = factory()
+        verification = verify(scenario.events)
+        evidence = evidence_export(scenario.events)
+        scenario_id = scenario.scenario_id or name.upper()
+        violations = [violation.model_dump(mode="json") for violation in verification.violations]
+        final_hash = evidence["hash_chain"][-1]["hash"] if evidence["hash_chain"] else None
+        logical_times = [event.logical_time for event in scenario.events]
+        records.append({
+            "scenario": scenario,
+            "scenario_id": scenario_id,
+            "verification": verification,
+            "evidence": evidence,
+            "violations": violations,
+            "event_times": {event.id: event.logical_time for event in scenario.events},
+            "run": {
+                "id": scenario_id,
+                "run_id": scenario_id,
+                "scenario_id": scenario_id,
+                "name": scenario.name,
+                "description": scenario.description,
+                "status": "completed",
+                "outcome": "ALLOW" if verification.valid else "REJECTED",
+                "started_at": f"t+{min(logical_times, default=0):03d}ms",
+                "completed_at": f"t+{max(logical_times, default=0):03d}ms",
+                "event_count": evidence["event_count"],
+                "event_ids": verification.checked_event_ids,
+                "violation_count": len(verification.violations),
+                "violation_codes": [violation.code for violation in verification.violations],
+                "verifier_version": verification.verifier_version,
+                "evidence_format": evidence["format"],
+                "evidence_hash": final_hash,
+                "summary": (
+                    f"Verifier accepted {evidence['event_count']} events."
+                    if verification.valid
+                    else f"Verifier rejected the stream: {', '.join(violation.code for violation in verification.violations)}."
+                ),
+            },
+        })
+    return records
+
+
+def _repair_records() -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for record in _scenario_records():
+        for index, violation in enumerate(record["violations"], start=1):
+            event_id = violation.get("event_id") or "stream"
+            finding_id = f"{record['scenario_id']}:{index}:{violation['code']}:{event_id}"
+            decision = get_repair_decision(finding_id)
+            findings.append({
+                "finding_id": finding_id,
+                "scenario_id": record["scenario_id"],
+                "scenario_name": record["scenario"].name,
+                "code": violation["code"],
+                "event_id": violation.get("event_id"),
+                "action_id": violation.get("action_id"),
+                "message": violation["message"],
+                "status": decision["status"] if decision else "PENDING",
+                "decision": decision["decision"] if decision else None,
+                "decided_by": decision["decided_by"] if decision else None,
+                "evidence_format": record["evidence"]["format"],
+                "evidence_hash": record["run"]["evidence_hash"],
+            })
+    return findings
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "chronicle-guard", "version": app.version}
+    return {"status": "ok", "service": "veylith", "version": app.version}
+
+
+@app.post("/api/auth/login")
+def login(request: LoginRequest) -> dict[str, Any]:
+    configured_email, configured_password = _reviewer_credentials()
+    if not configured_email or not configured_password:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Demo reviewer auth is not configured; set CHRONICLE_DEMO_REVIEWER_EMAIL and CHRONICLE_DEMO_REVIEWER_PASSWORD")
+    if not (hmac.compare_digest(request.email.strip(), configured_email) and hmac.compare_digest(request.password, configured_password)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid demo reviewer credentials", headers={"WWW-Authenticate": "Bearer"})
+    token = "demo-" + hashlib.sha256(f"{configured_email}:{configured_password}".encode("utf-8")).hexdigest()
+    user = {"id": "demo-reviewer", "email": configured_email, "name": "Chronicle demo reviewer", "role": "reviewer"}
+    _SESSIONS[token] = user
+    return {"access_token": token, "token_type": "bearer", "user": user}
+
+
+@app.get("/api/auth/me")
+def me(user: Annotated[dict[str, str], Depends(_current_user)]) -> dict[str, str]:
+    return user
 
 
 @app.get("/api/scenarios")
@@ -189,8 +317,45 @@ def chronicle_comparison(trace_id: str) -> dict:
 
 @app.get("/api/chronicle/repairs")
 def chronicle_repairs() -> dict:
-    scenario = SCENARIOS["revoked_approval_race"]()
-    return {"findings": verify(scenario.events).violations}
+    return {"findings": _repair_records()}
+
+
+@app.get("/api/chronicle/agent-runs")
+def chronicle_agent_runs() -> dict:
+    return {"runs": [record["run"] for record in _scenario_records()]}
+
+
+@app.get("/api/chronicle/notifications")
+def chronicle_notifications() -> dict:
+    notifications: list[dict[str, Any]] = []
+    for record in _scenario_records():
+        for index, violation in enumerate(record["violations"], start=1):
+            event_id = violation.get("event_id") or "stream"
+            notifications.append({
+                "id": f"notification:{record['scenario_id']}:{index}:{violation['code']}:{event_id}",
+                "finding_id": f"{record['scenario_id']}:{index}:{violation['code']}:{event_id}",
+                "scenario_id": record["scenario_id"],
+                "title": violation["code"].replace("_", " ").title(),
+                "message": violation["message"],
+                "severity": "critical",
+                "read": False,
+                "created_at": f"t+{record['event_times'].get(event_id, 0):03d}ms",
+            })
+    return {"notifications": notifications}
+
+
+@app.post("/api/chronicle/repairs/{finding_id}/decision")
+def chronicle_repair_decision(
+    finding_id: str,
+    request: RepairDecisionRequest,
+    user: Annotated[dict[str, str], Depends(_reviewer_user)],
+) -> dict[str, Any]:
+    finding = next((item for item in _repair_records() if item["finding_id"] == finding_id), None)
+    if finding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown finding: {finding_id}")
+    decision = {"decision": request.decision, "status": {"approve": "APPROVED", "reject": "REJECTED"}[request.decision], "decided_by": user["id"]}
+    saved = save_repair_decision(finding_id, request.decision, decision["status"], user["id"])
+    return {**finding, **saved}
 
 
 @app.get("/api/chronicle/evidence/exports")
