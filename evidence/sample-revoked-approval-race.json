@@ -1,0 +1,22 @@
+{
+  "format": "chronicle-guard-evidence-v1",
+  "scenario_id": "SCN-042",
+  "scenario_version": "1.0",
+  "seed": 7,
+  "policy_version": "baseline-v1",
+  "events": [
+    {"id": "e1", "kind": "action_requested", "at": 1, "event_time": 1, "processing_time": 1, "action_id": "door-1", "actor": "alice"},
+    {"id": "e2", "kind": "approval_granted", "at": 2, "event_time": 2, "processing_time": 2, "action_id": "door-1", "actor": "owner", "approval_id": "ap-1"},
+    {"id": "e3", "kind": "approval_revoked", "at": 3, "event_time": 3, "processing_time": 8, "action_id": "door-1", "actor": "owner", "approval_id": "ap-1"},
+    {"id": "e4", "kind": "action_executed", "at": 4, "event_time": 4, "processing_time": 9, "action_id": "door-1", "actor": "alice"},
+    {"id": "e5", "kind": "evidence_recorded", "at": 5, "event_time": 5, "processing_time": 5, "action_id": "door-1", "actor": "simulator", "approval_id": "ap-1", "evidence_id": "ev-1"}
+  ],
+  "expected": {
+    "baseline_allowed": true,
+    "verifier_valid": false,
+    "first_violation_event_id": "e4",
+    "violation_code": "revoked_approval_race",
+    "blocked_event_ids": ["e4"],
+    "protected_state_executed_at": null
+  }
+}
