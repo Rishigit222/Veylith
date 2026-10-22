@@ -1,4 +1,7 @@
 import React from 'react';
-import { ActivityIndicator, View } from 'react-native';
-import { colors } from '../ui';
-export function BootScreen() { return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F6FA' }}><ActivityIndicator color={colors.primary} /></View>; }
+import { ActivityIndicator, Text, View } from 'react-native';
+import { colors, styles } from '../ui';
+
+export function BootScreen() {
+  return <View style={styles.boot}><Text style={styles.bootBrand}>Veylith</Text><ActivityIndicator color={colors.primary} size="small" /><Text style={styles.muted}>Restoring your session…</Text></View>;
+}

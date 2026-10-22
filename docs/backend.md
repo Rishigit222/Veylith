@@ -12,7 +12,23 @@ these implementations separate makes disagreement a useful diagnostic rather
 than a circular result.
 
 The scenario module is a simulator only. It creates synthetic streams and has
-no Ring SDK, credentials, network calls, or device access.
+no effect on the Ring adapter. Ring calls are isolated in `chronicle_guard.ring`
+and use a server-side `RING_ACCESS_TOKEN` only. The documented operations are:
+
+- `GET https://api.amazonvision.com/v1/devices` for Device Discovery.
+- `GET https://api.amazonvision.com/v1/history/devices/{device_id}/events` for
+  Event History, with optional `event_types` and `page[key]` query parameters.
+- `POST https://api.amazonvision.com/v1/devices/{device_id}/media/streaming/whep/sessions`
+  with a raw `application/sdp` offer and optional `component_id` query parameter
+  for WHEP session creation. The adapter requires HTTP 201, a Location header,
+  and an SDP answer, and does not persist the temporary session.
+
+The Ring adapter never logs or returns the bearer token. Device Discovery and
+Event History responses are sanitized; history records map to `EventKind.RING_EVENT`
+with `source="ring_api"` and `provenance="ring_api"`. These external facts are
+separate from deterministic synthetic scenarios. A Playground response or
+Playground WHEP video is not counted as a Veylith API success until the backend
+itself completes the corresponding documented request.
 
 ## Mobile and web-console API
 

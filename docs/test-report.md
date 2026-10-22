@@ -4,7 +4,7 @@
 
 Run from `chronicle-guard/` on 2026-10-21:
 
-- `python -m pytest -q` — **18 passed**, one Starlette/httpx deprecation warning.
+- `python -m pytest -q` — **30 passed**, one Starlette/httpx deprecation warning.
 - `python -m compileall -q chronicle_guard tests` — passed.
 - `node --check static/app.js` — passed after Veylith branding and API wiring changes.
 - `python -m chronicle_guard.cli run revoked_approval_race` — verifier rejected `e4`, enforcement blocked `e4`, protected state remained unexecuted.
@@ -15,6 +15,8 @@ Run from `chronicle-guard/` on 2026-10-21:
 - `npx expo config --type public` — passed; Expo SDK 54 config resolved with Veylith branding and configurable API URL.
 - `npx expo-doctor` — **18/18 checks passed** after the current mobile change set.
 - FastAPI integration smoke test — login, `/api/auth/me`, all 9 scenario routes, flagship enforcement, legitimate workflow, and reviewer repair decision passed.
+- Ring adapter tests — Device Discovery, Event History provenance mapping, WHEP request/response validation, missing/expired token, HTTP error, malformed payload, and sanitized connection status passed with mocked external HTTP only.
+- Ring live-call status — not run in this workspace because `RING_ACCESS_TOKEN` was not supplied. The real endpoint returns a sanitized `503 missing_token` response rather than claiming success.
 
 ## Coverage focus
 

@@ -1,2 +1,42 @@
-import React, { useCallback, useEffect, useState } from 'react'; import { Alert, FlatList, Text, View } from 'react-native'; import { api, ApiError } from '../api'; import type { Finding } from '../types'; import { Button, Card, Pill, Screen, StateView, styles } from '../ui';
-export function RepairScreen() { const [items, setItems] = useState<Finding[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const load = useCallback(async () => { setLoading(true); setError(''); try { setItems(await api.repairs()); } catch (e) { setError(e instanceof ApiError ? e.message : 'Unable to load repair findings.'); } finally { setLoading(false); } }, []); useEffect(() => { load(); }, [load]); async function decide(item: Finding, decision: 'approve' | 'reject') { const findingId = String(item.finding_id || item.code || item.event_id || ''); if (!findingId) return Alert.alert('Missing finding ID', 'This finding cannot be decided until the API provides a finding_id.'); try { await api.decideRepair(findingId, decision); Alert.alert('Decision saved', `Repair ${decision}d.`); load(); } catch (e) { Alert.alert('Decision failed', e instanceof ApiError ? e.message : 'Try again.'); } } return <Screen title="Repair review" subtitle="Approve or reject proposed remediation"><StateView loading={loading} error={error} empty={!loading && !error && !items.length ? 'No repair findings are waiting for review.' : undefined} onRetry={load} /><FlatList data={items} keyExtractor={(item, index) => String(item.finding_id || item.code || index)} onRefresh={load} refreshing={loading} renderItem={({ item }) => <Card><View style={styles.row}><Text style={styles.sectionTitle}>{item.code || item.finding_id || 'Finding'}</Text><Pill label={item.status || 'PENDING'} tone="warning" /></View><Text style={styles.body}>{item.message || 'Review the verifier finding before deciding.'}</Text><View style={styles.row}><Button label="Reject" kind="danger" onPress={() => decide(item, 'reject')} /><Button label="Approve" onPress={() => decide(item, 'approve')} /></View></Card>} /></Screen>; }
+import React, { useCallback, useEffect, useState } from 'react';
+import { Alert, FlatList, Text, View } from 'react-native';
+import { api, ApiError } from '../api';
+import type { Finding } from '../types';
+import { Button, Card, Pill, Screen, StateView, styles } from '../ui';
+
+export function RepairScreen() {
+  const [items, setItems] = useState<Finding[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try { setItems(await api.repairs()); }
+    catch (e) { setError(e instanceof ApiError ? e.message : 'Unable to load repair findings.'); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function decide(item: Finding, decision: 'approve' | 'reject') {
+    const findingId = String(item.finding_id || item.code || item.event_id || '');
+    if (!findingId) return Alert.alert('Missing finding ID', 'This finding cannot be decided until the API provides a finding_id.');
+    try {
+      await api.decideRepair(findingId, decision);
+      Alert.alert('Decision saved', `Repair ${decision}d.`);
+      load();
+    } catch (e) {
+      Alert.alert('Decision failed', e instanceof ApiError ? e.message : 'Try again.');
+    }
+  }
+
+  return <Screen title="Repair review" subtitle="Approve or reject proposed remediation">
+    <StateView loading={loading && !items.length} error={!items.length && error ? error : undefined} empty={!loading && !error && !items.length ? 'No repair findings are waiting for review.' : undefined} onRetry={load} />
+    <FlatList data={items} keyExtractor={(item, index) => String(item.finding_id || item.code || index)} contentContainerStyle={styles.listContent} onRefresh={load} refreshing={loading} renderItem={({ item }) => <Card>
+      <View style={styles.row}><Text style={[styles.sectionTitle, { flex: 1 }]}>{item.code || item.finding_id || 'Finding'}</Text><Pill label={item.status || 'PENDING'} tone="warning" /></View>
+      <Text style={styles.body}>{item.message || 'Review the verifier finding before deciding.'}</Text>
+      <View style={styles.decisionRow}><View style={styles.decisionButton}><Button label="Reject" kind="danger" onPress={() => decide(item, 'reject')} /></View><View style={styles.decisionButton}><Button label="Approve" onPress={() => decide(item, 'approve')} /></View></View>
+    </Card>} />
+  </Screen>;
+}

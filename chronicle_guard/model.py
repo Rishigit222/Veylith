@@ -15,6 +15,7 @@ class EventKind(StrEnum):
     TOOL_TIMEOUT = "tool_timeout"
     UNTRUSTED_INSTRUCTION = "untrusted_instruction"
     ACTION_CANCELLED = "action_cancelled"
+    RING_EVENT = "ring_event"
 
 
 class Event(BaseModel):

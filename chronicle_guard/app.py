@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +17,7 @@ from .export import evidence_export
 from .model import ActionRequest, ExportRequest, LoginRequest, RepairDecisionRequest, RepairRequest, ReplayRequest
 from .policy import evaluate_baseline
 from .repair import validate_repair
+from .ring import RingAdapter, RingIntegrationError, ring_status
 from .scenarios import SCENARIOS, list_scenarios
 from .state import replay
 from .storage import get_repair_decision, save_repair_decision
@@ -22,10 +25,52 @@ from .verifier import enforce_temporal, reduce_counterexample, verify
 
 app = FastAPI(title="Veylith", version="0.2.0")
 
+
+def _cors_origins() -> list[str]:
+    configured = os.getenv("VEYLITH_CORS_ORIGINS", "")
+    return [origin.strip() for origin in configured.split(",") if origin.strip()]
+
+
+_ALLOWED_CORS_ORIGINS = _cors_origins()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_CORS_ORIGINS,
+    allow_credentials=bool(_ALLOWED_CORS_ORIGINS),
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type"],
+)
+
 # This backend intentionally uses a tiny in-memory store for the demo clients.
 # It is reset on process restart and is not a production identity or database.
 _SESSIONS: dict[str, dict[str, str]] = {}
 _BEARER = HTTPBearer(auto_error=False)
+_RING_TEST_STATE: dict[str, Any] = {
+    "last_test_at": None,
+    "last_success": None,
+    "last_error_code": None,
+    "last_error": None,
+    "device_count": None,
+    "verified_operations": {"device_discovery": False, "event_history": False, "whep_session_creation": False},
+}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ring_status() -> dict[str, Any]:
+    return ring_status(**_RING_TEST_STATE)
+
+
+def _record_ring_success(operation: str, *, device_count: int | None = None) -> None:
+    _RING_TEST_STATE.update({"last_test_at": _now_iso(), "last_success": True, "last_error_code": None, "last_error": None})
+    _RING_TEST_STATE["verified_operations"][operation] = True
+    if device_count is not None:
+        _RING_TEST_STATE["device_count"] = device_count
+
+
+def _record_ring_error(error: RingIntegrationError) -> None:
+    _RING_TEST_STATE.update({"last_test_at": _now_iso(), "last_success": False, "last_error_code": error.code, "last_error": str(error), "device_count": None})
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.is_dir():
@@ -58,6 +103,7 @@ def _trace_events(events):
         "tool_timeout": ("TOOL", "Tool response timed out", "execution outcome is uncertain", "authority"),
         "untrusted_instruction": ("UNTRUSTED", "Untrusted instruction ignored", "event content cannot rewrite agent policy", "authority"),
         "action_cancelled": ("CALLER", "Action cancelled", "pending operation removed", ""),
+        "ring_event": ("RING", "Ring event observed", "external Ring-originated fact; not a synthetic scenario event", "authority"),
     }
     return [{
         "kind": labels.get(event.kind.value, ("EVENT", event.kind.value, "event observed", ""))[0],
@@ -75,6 +121,13 @@ def _reviewer_credentials() -> tuple[str, str]:
     email = os.getenv("CHRONICLE_DEMO_REVIEWER_EMAIL", "").strip()
     password = os.getenv("CHRONICLE_DEMO_REVIEWER_PASSWORD", "")
     return email, password
+
+
+def _demo_auth_allowed() -> bool:
+    environment = os.getenv("VEYLITH_ENV", "development").strip().lower()
+    if environment != "production":
+        return True
+    return os.getenv("VEYLITH_ALLOW_DEMO_AUTH", "false").strip().lower() == "true"
 
 
 def _auth_error(detail: str = "Bearer authentication is required") -> HTTPException:
@@ -172,6 +225,8 @@ def health() -> dict:
 
 @app.post("/api/auth/login")
 def login(request: LoginRequest) -> dict[str, Any]:
+    if not _demo_auth_allowed():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Demo authentication is disabled in production; configure a production identity provider before enabling public reviewer actions")
     configured_email, configured_password = _reviewer_credentials()
     if not configured_email or not configured_password:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Demo reviewer auth is not configured; set CHRONICLE_DEMO_REVIEWER_EMAIL and CHRONICLE_DEMO_REVIEWER_PASSWORD")
@@ -240,6 +295,60 @@ def repair_api(request: RepairRequest):
 @app.post("/api/export")
 def export_api(request: ExportRequest):
     return evidence_export(request.events, request.include_state)
+
+
+@app.get("/api/ring/status")
+def ring_status_api() -> dict[str, Any]:
+    """Return sanitized Ring configuration and last-call status."""
+    return _ring_status()
+
+
+@app.get("/api/ring/device-discovery")
+def ring_device_discovery() -> dict[str, Any]:
+    """Call Ring's documented Device Discovery operation server-side."""
+    adapter = RingAdapter()
+    try:
+        result = adapter.discover_devices()
+    except RingIntegrationError as error:
+        _record_ring_error(error)
+        raise HTTPException(status_code=503 if error.code == "missing_token" else (error.status_code or 502), detail={"code": error.code, "message": str(error)}) from error
+    _record_ring_success("device_discovery", device_count=len(result["data"]))
+    return {"status": "success", "source": "ring_api", "response": result, "integration": _ring_status()}
+
+
+@app.get("/api/ring/devices/{device_id}/event-history")
+def ring_event_history(
+    device_id: str,
+    event_types: list[str] | None = Query(default=None),
+    page_key: str | None = Query(default=None, alias="page[key]"),
+) -> dict[str, Any]:
+    """Call documented Event History and map returned facts into Veylith events."""
+    adapter = RingAdapter()
+    try:
+        result = adapter.event_history(device_id, event_types=event_types, page_key=page_key)
+        mapped_events = adapter.history_to_events(result, device_id=device_id)
+    except RingIntegrationError as error:
+        _record_ring_error(error)
+        raise HTTPException(status_code=503 if error.code == "missing_token" else (error.status_code or 502), detail={"code": error.code, "message": str(error)}) from error
+    _record_ring_success("event_history")
+    return {"status": "success", "source": "ring_api", "response": result, "events": mapped_events, "integration": _ring_status()}
+
+
+@app.post("/api/ring/devices/{device_id}/whep-session")
+def ring_whep_session(
+    device_id: str,
+    sdp_offer: str = Body(..., media_type="application/sdp"),
+    component_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Create a temporary Ring WHEP session; the SDP is never persisted."""
+    adapter = RingAdapter()
+    try:
+        session = adapter.create_whep_session(device_id, sdp_offer, component_id=component_id)
+    except RingIntegrationError as error:
+        _record_ring_error(error)
+        raise HTTPException(status_code=503 if error.code == "missing_token" else (error.status_code or 502), detail={"code": error.code, "message": str(error)}) from error
+    _record_ring_success("whep_session_creation")
+    return {"status": "success", "source": "ring_api", "session": session, "integration": _ring_status(), "session_persistence": "not_stored"}
 
 
 # Compatibility routes used by the static console. They deliberately call the
@@ -367,7 +476,8 @@ def chronicle_exports() -> dict:
 @app.get("/api/chronicle/integrations")
 def chronicle_integrations() -> dict:
     return {
-        "status": "simulator-only",
-        "integrations": [{"name": "Deterministic event simulator", "status": "active", "kind": "simulated"}],
-        "optional": [{"name": "Ring official API", "status": "unconfigured", "kind": "real", "note": "No credentials or verified API access configured; no live device actions are attempted."}],
+        "status": "ring_api_configured" if _ring_status()["configured"] else "simulator-only",
+        "integrations": [{"name": "Deterministic event simulator", "status": "active", "kind": "simulated", "source": "synthetic"}],
+        "optional": [{"name": "Ring official Partner API", "status": "configured" if _ring_status()["configured"] else "unconfigured", "kind": "real", "source": "ring_api", "note": "Device Discovery, Event History, and WHEP session creation are isolated server-side operations; no token is exposed to clients."}],
+        "ring": _ring_status(),
     }

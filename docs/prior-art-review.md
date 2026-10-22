@@ -38,7 +38,14 @@ account owner and at least one connected Ring camera or doorbell, and may
 require a subscription depending on the integration. The Amazon Developer
 homepage currently advertises the Build, Ship, Shape hackathon with Ring as one
 of the participating platforms and lists October 23, 2026 as the submission
-close date.
+close date. The official Ring Partner API reference documents the base origin
+`https://api.amazonvision.com`, Bearer-token authorization, JSON:API Device
+Discovery at `GET /v1/devices`, Event History at
+`GET /v1/history/devices/{device_id}/events`, and WHEP session creation at
+`POST /v1/devices/{device_id}/media/streaming/whep/sessions` with an SDP offer.
+The Playground is useful for observing and simulating supported flows, but a
+Playground browser session is not assumed to be an externally reusable API
+credential or WHEP session.
 
 No Ring credentials, test account, physical device, or verified application
 registration were available in this workspace on 2026-10-21. Therefore the

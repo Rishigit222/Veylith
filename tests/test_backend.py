@@ -185,3 +185,13 @@ def test_health_identifies_veylith_service():
     health = client.get("/health").json()
     assert health["service"] == "veylith"
     assert health["status"] == "ok"
+
+
+def test_production_environment_disables_demo_login_without_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("VEYLITH_ENV", "production")
+    monkeypatch.setenv("VEYLITH_ALLOW_DEMO_AUTH", "false")
+    monkeypatch.setenv("CHRONICLE_DEMO_REVIEWER_EMAIL", "reviewer@example.com")
+    monkeypatch.setenv("CHRONICLE_DEMO_REVIEWER_PASSWORD", "demo-password")
+    response = client.post("/api/auth/login", json={"email": "reviewer@example.com", "password": "demo-password"})
+    assert response.status_code == 503
+    assert "production" in response.json()["detail"]

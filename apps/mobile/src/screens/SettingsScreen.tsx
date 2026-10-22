@@ -1,2 +1,18 @@
-import React from 'react'; import { Linking, Text } from 'react-native'; import Constants from 'expo-constants'; import { useSession } from '../session'; import { API_BASE_URL } from '../api'; import { Button, Card, Screen, styles } from '../ui';
-export function SettingsScreen() { const { user, signOut } = useSession(); const pushStatus = Constants.expoConfig?.extra?.pushStatus || 'disabled'; return <Screen title="Settings" subtitle="Session and connection controls"><Card><Text style={styles.sectionTitle}>Account</Text><Text style={styles.body}>{user?.name || user?.email || 'Signed-in operator'}</Text><Text style={styles.muted}>{user?.role || 'Role provided by API'}</Text><Button label="Sign out" kind="secondary" onPress={signOut} /></Card><Card><Text style={styles.sectionTitle}>API connection</Text><Text style={styles.label}>Configured base URL</Text><Text style={styles.body}>{API_BASE_URL}</Text><Text style={[styles.muted, { marginTop: 8 }]}>Change EXPO_PUBLIC_API_BASE_URL and restart Expo to switch environments.</Text></Card><Card><Text style={styles.sectionTitle}>Notifications</Text><Text style={styles.body}>Remote push: {pushStatus === 'configured' ? 'configured' : 'disabled'}</Text><Text style={styles.muted}>The in-app notification center remains available without push credentials.</Text></Card><Card><Text style={styles.sectionTitle}>Help</Text><Text onPress={() => Linking.openURL('https://docs.expo.dev/')} style={{ color: '#176B87', fontWeight: '800' }}>Expo documentation →</Text></Card></Screen>; }
+import React from 'react';
+import { Linking, Text } from 'react-native';
+import Constants from 'expo-constants';
+import { useSession } from '../session';
+import { API_BASE_URL } from '../api';
+import { Button, Card, LinkButton, Pill, Screen, styles } from '../ui';
+
+export function SettingsScreen() {
+  const { user, signOut } = useSession();
+  const pushStatus = Constants.expoConfig?.extra?.pushStatus || 'disabled';
+
+  return <Screen title="Settings" subtitle="Session and connection controls">
+    <Card><Text style={styles.sectionTitle}>Account</Text><Text style={styles.body}>{user?.name || user?.email || 'Signed-in operator'}</Text><Text style={[styles.muted, { marginTop: 4 }]}>{user?.role || 'Role provided by API'}</Text><Button label="Sign out" kind="secondary" onPress={signOut} /></Card>
+    <Card><Text style={styles.sectionTitle}>API connection</Text><Text style={styles.label}>Configured base URL</Text><Text style={[styles.body, { marginTop: 6 }]}>{API_BASE_URL}</Text><Text style={[styles.muted, { marginTop: 8 }]}>Change EXPO_PUBLIC_API_BASE_URL and restart Expo to switch environments.</Text></Card>
+    <Card><Text style={styles.sectionTitle}>Notifications</Text><Text style={styles.body}>Remote push: {pushStatus === 'configured' ? 'configured' : 'disabled'}</Text><Pill label={pushStatus === 'configured' ? 'CONFIGURED' : 'IN-APP ONLY'} tone={pushStatus === 'configured' ? 'success' : 'neutral'} /><Text style={[styles.muted, { marginTop: 8 }]}>The in-app notification center remains available without push credentials.</Text></Card>
+    <Card><Text style={styles.sectionTitle}>Help</Text><LinkButton label="Expo documentation →" onPress={() => Linking.openURL('https://docs.expo.dev/')} /></Card>
+  </Screen>;
+}

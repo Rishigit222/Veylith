@@ -4,6 +4,7 @@
 
   const API_ROOT = window.CHRONICLE_API_BASE || '/api/chronicle';
   const AUTH_ROOT = API_ROOT.replace(/\/api\/chronicle\/?$/, '/api');
+  const RING_ROOT = API_ROOT.replace(/\/api\/chronicle\/?$/, '/api/ring');
   const state = {
     view: 'overview',
     scenario: 'revoked',
@@ -112,10 +113,15 @@
   function renderIntegrationStatus(data = {}) {
     const summary = qs('.integration-summary');
     const grid = qs('.integration-grid');
+    const ring = data.ring || {};
+    const operations = ring.verified_operations || {};
+    const operationLabel = Object.entries(operations).filter(([, value]) => value).map(([key]) => key.replaceAll('_', ' ')).join(', ') || 'none verified by this app';
+    const lastTest = ring.last_test_at ? new Date(ring.last_test_at).toLocaleString() : 'not tested by this app';
+    const resultLabel = ring.last_success === true ? 'SUCCEEDED' : ring.last_success === false ? 'FAILED' : 'NOT TESTED';
     const simulated = (data.integrations || []).filter((item) => item.kind === 'simulated');
     const optional = (data.optional || []).filter((item) => item.kind === 'real');
-    if (summary) summary.innerHTML = `<div><span class="summary-icon lime">✓</span><span><b>${simulated.length} active</b><small>simulated sources</small></span></div><div><span class="summary-icon cyan">◎</span><span><b>local</b><small>execution placement</small></span></div><div><span class="summary-icon violet">${optional.length}</span><span><b>optional</b><small>real integrations</small></span></div><div><span class="summary-icon amber">!</span><span><b>no devices</b><small>physical actions disabled</small></span></div>`;
-    if (grid) grid.innerHTML = `<article class="panel integration-detail"><div class="integration-title"><span class="integration-logo cyan large">◎</span><div><h2>Deterministic event simulator</h2><span class="status-badge live">ACTIVE</span></div></div><div class="integration-url mono">in-process / chronicle_guard.scenarios</div><p class="panel-copy">The demo uses typed synthetic events and never connects to a physical Ring device.</p><button class="button ghost full" data-action="test-integration">Run source health check</button></article><article class="panel integration-detail"><div class="integration-title"><span class="integration-logo muted large">R</span><div><h2>Ring official API</h2><span class="status-badge warning">UNCONFIGURED</span></div></div><div class="integration-url mono">optional / credentials not present</div><p class="panel-copy">No Ring adapter is claimed. Configure only after official access, scopes, and hackathon eligibility are independently verified.</p><button class="button ghost full" data-action="add-integration">Review blocker</button></article>`;
+    if (summary) summary.innerHTML = `<div><span class="summary-icon lime">✓</span><span><b>${simulated.length} active</b><small>synthetic sources</small></span></div><div><span class="summary-icon cyan">${ring.configured ? '●' : '○'}</span><span><b>${ring.configured ? 'configured' : 'unconfigured'}</b><small>server-side token</small></span></div><div><span class="summary-icon violet">${Object.values(operations).filter(Boolean).length}</span><span><b>${resultLabel}</b><small>Ring operations verified</small></span></div><div><span class="summary-icon amber">!</span><span><b>no devices</b><small>unless API returns them</small></span></div>`;
+    if (grid) grid.innerHTML = `<article class="panel integration-detail"><div class="integration-title"><span class="integration-logo cyan large">◎</span><div><h2>Deterministic event simulator</h2><span class="status-badge live">ACTIVE</span></div></div><div class="integration-url mono">in-process / chronicle_guard.scenarios</div><p class="panel-copy">Synthetic events are isolated from Ring-originated facts and remain the verifier regression source.</p><button class="button ghost full" data-action="test-integration">Run simulator health check</button></article><article class="panel integration-detail"><div class="integration-title"><span class="integration-logo muted large">R</span><div><h2>Ring Partner API</h2><span class="status-badge ${ring.last_success === true ? 'live' : 'warning'}">${ring.configured ? resultLabel : 'UNCONFIGURED'}</span></div></div><div class="integration-url mono">${esc(ring.base_url || 'https://api.amazonvision.com')} · server-side only</div><div class="integration-stats"><span><small>LAST TEST</small><b>${esc(lastTest)}</b></span><span><small>DEVICE COUNT</small><b>${ring.device_count === null || ring.device_count === undefined ? '—' : esc(ring.device_count)}</b></span><span><small>VERIFIED</small><b>${esc(operationLabel)}</b></span></div><p class="panel-copy">Device Discovery, Event History, and WHEP session creation are only marked verified after this application succeeds. Playground activity is not counted.</p><button class="button ghost full" data-action="test-ring">Test Device Discovery</button></article>`;
   }
 
   function renderRepairFindings(findings = []) {
@@ -255,10 +261,20 @@
     if (action === 'toggle-sidebar') qs('#sidebar').classList.toggle('open');
     if (action === 'refresh') { state.loaded = {}; loadViewData(state.view); toast('Data refreshed', 'success'); }
     if (action === 'run-race') { state.scenario = 'revoked'; state.scenarioId = 'SCN-042'; renderScenario(); setView('scenario'); toast('Flagship race loaded', 'success', 'Press Execute sequence when ready.'); }
+    if (action === 'load-scenario') { state.scenario = 'custom'; state.scenarioId = 'SCN-NEW'; renderScenario(); setView('scenario'); toast('New scenario workspace ready', 'success', 'Add events to the local draft before executing.'); }
+    if (action === 'duplicate-scenario') { const original = mocks.scenarios[state.scenario] || mocks.scenarios.revoked; mocks.scenarios.custom.events = [...original.events]; state.scenario = 'custom'; state.scenarioId = 'SCN-NEW'; renderScenario(mocks.scenarios.custom); setView('scenario'); toast('Scenario duplicated locally', 'success', 'The draft is isolated from the catalog until execution.'); }
     if (action === 'run-scenario') runScenario();
     if (action === 'pause-trace') { state.tracePaused = !state.tracePaused; target.textContent = state.tracePaused ? '▶ Resume stream' : 'Ⅱ Pause stream'; toast(state.tracePaused ? 'Trace stream paused' : 'Trace stream resumed'); }
     if (action === 'clear-trace') { qs('#trace-stream').innerHTML = ''; toast('Trace cleared'); }
     if (action === 'download-trace' || action === 'export-quick' || action === 'export-comparison' || action === 'generate-export') downloadEvidence();
+    if (action === 'refresh-exports') { state.loaded.evidence = false; loadViewData('evidence'); toast('Evidence list refreshed', 'success'); }
+    if (action === 'toggle-artifacts') {
+      const checks = qsa('.selection-box input[type="checkbox"]');
+      const shouldCheck = checks.some((checkbox) => !checkbox.checked);
+      checks.forEach((checkbox) => { checkbox.checked = shouldCheck; });
+      target.textContent = shouldCheck ? 'Clear all' : 'Select all';
+      toast(shouldCheck ? 'All artifacts selected' : 'Artifact selection cleared', 'success');
+    }
     if (action === 'new-export') qs('.field input')?.focus();
     if (action === 'add-event') { mocks.scenarios[state.scenario].events.push(['CALLER', 'New event', 'Describe the event fact', 't+000ms', '']); renderScenario(); toast('Event added', 'success', 'Edit the backend payload when connected.'); }
     if (action === 'remove-event') { target.closest('.event-row')?.remove(); toast('Event removed'); }
@@ -267,7 +283,9 @@
     if (action === 'submit-repair-review') submitRepairReview();
     if (action === 'create-repair') openModal('Create repair', 'Select a finding from the queue to generate a bounded remediation patch.', '<button class="button secondary" data-action="close-modal">Cancel</button><button class="button primary" data-action="approve-repair">Create draft</button>');
     if (action === 'add-integration') openModal('Connect an integration', 'The backend can expose a connection flow here. Planned adapters: GitHub Enterprise, Vault Transit, Kafka Events, and signed webhook sources.', '<button class="button secondary" data-action="close-modal">Cancel</button><button class="button primary" data-action="close-modal">Continue</button>');
+    if (action === 'integration-menu') toast('Integration details', 'success', 'Use the Integration Status page for API-backed health and Ring verification state.');
     if (action === 'test-integration' || action === 'refresh-integrations') { state.loaded.integrations = false; loadViewData('integrations'); toast('Integration status refreshed', 'success', 'Simulator and Ring configuration state re-read from the API.'); }
+    if (action === 'test-ring') testRingDiscovery();
     if (action === 'notifications') loadNotifications();
     if (action === 'workspace' || action === 'profile') openModal(action === 'workspace' ? 'Workspace' : 'Operator profile', action === 'workspace' ? 'northstar-labs / production / us-east-1' : 'Mara K. · security engineer', '<button class="button primary" data-action="close-modal">Close</button>');
     if (action === 'zoom-in' || action === 'zoom-out') toast(action === 'zoom-in' ? 'Timeline zoomed in' : 'Timeline zoomed out');
@@ -282,6 +300,22 @@
       openModal('Notifications', body, '<button class="button primary" data-action="close-modal">Done</button>');
     } catch (error) {
       toast('Notifications unavailable', 'error', error instanceof Error ? error.message : 'The API did not return notifications.');
+    }
+  }
+
+  async function testRingDiscovery() {
+    toast('Testing Ring Device Discovery', 'success', 'Calling the server-side adapter; the token never enters the browser.');
+    try {
+      const response = await fetch(`${RING_ROOT}/device-discovery`, { headers: { Accept: 'application/json' } });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail?.message || body.detail || `HTTP ${response.status}`);
+      state.loaded.integrations = false;
+      await loadViewData('integrations');
+      toast('Ring Device Discovery succeeded', 'success', `${body.response?.data?.length || 0} records returned by the API.`);
+    } catch (error) {
+      state.loaded.integrations = false;
+      await loadViewData('integrations');
+      toast('Ring Device Discovery did not succeed', 'error', error instanceof Error ? error.message : 'No sanitized response was returned.');
     }
   }
 
@@ -305,6 +339,7 @@
   });
 
   loadViewData('overview');
+  loadViewData('integrations');
   renderRecent();
   renderBars();
   renderScenario();
