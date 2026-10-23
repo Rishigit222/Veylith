@@ -72,7 +72,9 @@ def _record_ring_success(operation: str, *, device_count: int | None = None) -> 
 def _record_ring_error(error: RingIntegrationError) -> None:
     _RING_TEST_STATE.update({"last_test_at": _now_iso(), "last_success": False, "last_error_code": error.code, "last_error": str(error), "device_count": None})
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+_PACKAGE_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_ROOT_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+STATIC_DIR = _PACKAGE_STATIC_DIR if _PACKAGE_STATIC_DIR.is_dir() else _ROOT_STATIC_DIR
 if STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
