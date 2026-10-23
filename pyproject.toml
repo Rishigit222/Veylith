@@ -27,4 +27,4 @@ addopts = "-q"
 include = ["chronicle_guard*"]
 
 [tool.vercel]
-entrypoint = "chronicle_guard/app.py"
+entrypoint = "chronicle_guard.app:app"
