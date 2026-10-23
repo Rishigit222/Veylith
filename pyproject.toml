@@ -25,3 +25,6 @@ addopts = "-q"
 
 [tool.setuptools.packages.find]
 include = ["chronicle_guard*"]
+
+[tool.vercel]
+entrypoint = "chronicle_guard/app.py"
