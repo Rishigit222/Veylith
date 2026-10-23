@@ -1,6 +1,6 @@
 # Final audit checklist
 
-Status is intentionally evidence-based and was refreshed on 2026-10-21 after the backend and mobile changes.
+Status is intentionally evidence-based and was refreshed on 2026-10-23 after the trusted replay, enforcement, console, and mobile build-boundary changes.
 
 - [x] Deterministic flagship scenario exists.
 - [x] Baseline and independent verifier are separately callable.
@@ -20,7 +20,7 @@ Status is intentionally evidence-based and was refreshed on 2026-10-21 after the
 - [ ] Veylith server-side Ring Event History independently verified; no device ID was available from the Playground response `{ "data": [] }`.
 - [ ] Veylith server-side WHEP session independently verified; Playground session creation is not treated as reusable or externally authenticated.
 - [ ] Public sub-three-minute demonstration video recorded.
-- [x] Final post-change backend, Ring adapter, and mobile check results attached (29 backend tests; Expo typecheck; Expo Doctor 18/18).
+- [x] Final post-change backend and Ring adapter results attached (37 backend tests; mobile dependency checks explicitly reported when blocked).
 
 ## Submission claim
 
@@ -28,10 +28,10 @@ The defensible claim is: Veylith demonstrates a measurable temporal-verification
 
 ## Current check evidence
 
-- Backend: 16 pytest tests passed after adding mobile-facing API endpoints.
+- Backend: 37 pytest tests passed after adding workflow-scoped enforcement and the trusted replay response contract.
 - Backend compilation: passed.
-- Web JavaScript syntax: passed before the final UI wiring changes; rerun after the current change set.
-- Mobile: `npm run typecheck` passed; `npx expo-doctor` reported 18/18 checks passed after the current mobile change set.
+- Web JavaScript syntax: passed after the trusted replay console rewrite.
+- Mobile: `npm run typecheck` and `npx expo-doctor` were blocked because local mobile dependencies are not installed; EAS config now rejects localhost and non-HTTPS API origins.
 - Docker: Dockerfile includes a health check, but the local Docker Desktop Linux engine was unavailable during the last build attempt.
 - Deployment: no public URL is claimed because no hosting credentials or deployment target were available.
 - Ring: official Playground activity was user-confirmed for Device Discovery (`{"data":[]}`) and a simulated WHEP live-view flow, but the Veylith backend has not yet called Ring because no server-side token was available in this workspace. Those are documented observations, not claimed Veylith successes.

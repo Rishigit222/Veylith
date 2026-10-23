@@ -23,7 +23,7 @@ from .state import replay
 from .storage import get_repair_decision, save_repair_decision
 from .verifier import enforce_temporal, reduce_counterexample, verify
 
-app = FastAPI(title="Veylith", version="0.2.0")
+app = FastAPI(title="Veylith", version="0.3.0")
 
 
 def _cors_origins() -> list[str]:
@@ -91,9 +91,21 @@ CHRONICLE_IDS = {
     "SCN-023": "network_timeout",
     "SCN-029": "untrusted_instruction",
 }
+TRACE_ALIASES = {"trace-7f3a": "SCN-042"}
 
 
-def _trace_events(events):
+def _scenario_for_trace(trace_id: str):
+    normalized = trace_id.strip()
+    scenario_id = TRACE_ALIASES.get(normalized.lower(), normalized.upper())
+    name = CHRONICLE_IDS.get(scenario_id)
+    if name is None and normalized in SCENARIOS:
+        name = normalized
+    if name is None:
+        raise HTTPException(status_code=404, detail=f"unknown trace: {trace_id}")
+    return scenario_id, SCENARIOS[name]()
+
+
+def _trace_events(events, verification=None):
     labels = {
         "action_requested": ("CALLER", "Action requested", "request recorded", ""),
         "approval_granted": ("AUTHORITY", "Approval granted", "approval is active", "authority"),
@@ -105,6 +117,11 @@ def _trace_events(events):
         "action_cancelled": ("CALLER", "Action cancelled", "pending operation removed", ""),
         "ring_event": ("RING", "Ring event observed", "external Ring-originated fact; not a synthetic scenario event", "authority"),
     }
+    violations_by_event: dict[str, list[str]] = {}
+    if verification is not None:
+        for violation in verification.violations:
+            if violation.event_id:
+                violations_by_event.setdefault(violation.event_id, []).append(violation.code)
     return [{
         "kind": labels.get(event.kind.value, ("EVENT", event.kind.value, "event observed", ""))[0],
         "label": labels.get(event.kind.value, ("EVENT", event.kind.value, "event observed", ""))[1],
@@ -112,8 +129,15 @@ def _trace_events(events):
         "time": f"t+{event.logical_time:03d}ms / recv+{event.received_time:03d}ms",
         "cls": labels.get(event.kind.value, ("EVENT", event.kind.value, "event observed", ""))[3],
         "event_id": event.id,
+        "event_kind": event.kind.value,
+        "logical_time": event.logical_time,
+        "received_time": event.received_time,
+        "actor": event.actor,
+        "action_id": event.action_id,
+        "workflow_id": event.workflow_id,
         "source": event.source,
         "provenance": event.provenance,
+        "violation_codes": violations_by_event.get(event.id, []),
     } for event in events]
 
 
@@ -194,6 +218,37 @@ def _scenario_records() -> list[dict[str, Any]]:
     return records
 
 
+def _scenario_response(scenario_id: str, scenario) -> dict[str, Any]:
+    """Return one canonical, self-describing replay response for every client."""
+    verification = verify(scenario.events)
+    baseline = evaluate_baseline(scenario.events)
+    enforced_state, blocked_event_ids = enforce_temporal(scenario.events)
+    evidence = evidence_export(scenario.events)
+    return {
+        "scenario_id": scenario_id,
+        "scenario": {
+            "id": scenario_id,
+            "name": scenario.name,
+            "display_name": scenario.name.replace("_", " ").title(),
+            "description": scenario.description,
+            "version": scenario.version,
+            "seed": scenario.seed,
+            "policy_version": scenario.policy_version,
+            "event_count": len(scenario.events),
+            "event_ids": [event.id for event in scenario.events],
+            "events": [event.model_dump(mode="json") for event in scenario.events],
+        },
+        "outcome": "ALLOW" if verification.valid else "REJECTED",
+        "state": replay(scenario.events),
+        "events": _trace_events(scenario.events, verification),
+        "baseline": baseline,
+        "verification": verification,
+        "counterexample": reduce_counterexample(scenario.events),
+        "enforcement": {"blocked_event_ids": blocked_event_ids, "state": enforced_state},
+        "evidence": evidence,
+    }
+
+
 def _repair_records() -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for record in _scenario_records():
@@ -254,16 +309,7 @@ def run_scenario(name: str) -> dict:
     if factory is None:
         raise HTTPException(status_code=404, detail=f"unknown scenario: {name}")
     scenario = factory()
-    enforced_state, blocked_event_ids = enforce_temporal(scenario.events)
-    return {
-        "scenario": scenario,
-        "state": replay(scenario.events),
-        "baseline": evaluate_baseline(scenario.events),
-        "verification": verify(scenario.events),
-        "counterexample": reduce_counterexample(scenario.events),
-        "enforcement": {"blocked_event_ids": blocked_event_ids, "state": enforced_state},
-        "evidence": evidence_export(scenario.events),
-    }
+    return _scenario_response(scenario.scenario_id or name.upper(), scenario)
 
 
 @app.post("/api/replay")
@@ -372,7 +418,14 @@ def chronicle_overview() -> dict:
             "baseline_divergences": sum(b.allowed and not v.valid for _, b, v in results),
         },
         "recent": [["SCN-042", "simulator/door-1", "REJECT" if not result.valid else "ALLOW", "deterministic"]],
-        "scenario": {"id": "SCN-042", "name": scenario.name, "description": scenario.description},
+        "scenario": {
+            "id": "SCN-042",
+            "name": scenario.name,
+            "description": scenario.description,
+            "event_count": len(scenario.events),
+            "outcome": "ALLOW" if result.valid else "REJECTED",
+            "violation_codes": [violation.code for violation in result.violations],
+        },
         "integration": {"mode": "simulator-only", "ring": "unconfigured"},
     }
 
@@ -391,37 +444,28 @@ def chronicle_run_scenario(scenario_id: str) -> dict:
     name = CHRONICLE_IDS.get(scenario_id.upper())
     if name is None:
         raise HTTPException(status_code=404, detail=f"unknown scenario: {scenario_id}")
-    scenario = SCENARIOS[name]()
-    result = verify(scenario.events)
-    enforced_state, blocked_event_ids = enforce_temporal(scenario.events)
-    return {
-        "scenario_id": scenario_id.upper(),
-        "outcome": "ALLOW" if result.valid else "REJECTED",
-        "events": _trace_events(scenario.events),
-        "verification": result,
-        "baseline": evaluate_baseline(scenario.events),
-        "counterexample": reduce_counterexample(scenario.events),
-        "enforcement": {"blocked_event_ids": blocked_event_ids, "state": enforced_state},
-        "evidence": evidence_export(scenario.events),
-    }
+    return _scenario_response(scenario_id.upper(), SCENARIOS[name]())
 
 
 @app.get("/api/chronicle/traces/{trace_id}")
 def chronicle_trace(trace_id: str) -> dict:
-    scenario = SCENARIOS["revoked_approval_race"]()
-    return {"trace_id": trace_id, "events": _trace_events(scenario.events), "verification": verify(scenario.events), "baseline": evaluate_baseline(scenario.events)}
+    scenario_id, scenario = _scenario_for_trace(trace_id)
+    response = _scenario_response(scenario_id, scenario)
+    return {"trace_id": trace_id, **response}
 
 
 @app.get("/api/chronicle/timeline/{trace_id}")
 def chronicle_timeline(trace_id: str) -> dict:
-    scenario = SCENARIOS["revoked_approval_race"]()
-    return {"trace_id": trace_id, "events": _trace_events(scenario.events)}
+    scenario_id, scenario = _scenario_for_trace(trace_id)
+    response = _scenario_response(scenario_id, scenario)
+    return {"trace_id": trace_id, "scenario_id": scenario_id, "events": response["events"]}
 
 
 @app.get("/api/chronicle/comparisons/{trace_id}")
 def chronicle_comparison(trace_id: str) -> dict:
-    scenario = SCENARIOS["revoked_approval_race"]()
-    return {"trace_id": trace_id, "baseline": evaluate_baseline(scenario.events), "verifier": verify(scenario.events)}
+    scenario_id, scenario = _scenario_for_trace(trace_id)
+    response = _scenario_response(scenario_id, scenario)
+    return {"trace_id": trace_id, "scenario_id": scenario_id, "baseline": response["baseline"], "verifier": response["verification"]}
 
 
 @app.get("/api/chronicle/repairs")

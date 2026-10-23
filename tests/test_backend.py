@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 import chronicle_guard.app as app_module
 from chronicle_guard.app import app
-from chronicle_guard.model import Event, EventKind, RepairRequest
+from chronicle_guard.model import Event, EventKind, RepairRequest, scope_key
 from chronicle_guard.policy import evaluate_baseline
 from chronicle_guard.scenarios import SCENARIOS
 from chronicle_guard.state import replay
@@ -17,8 +17,8 @@ def test_state_transitions_and_replay_are_deterministic():
     first = replay(events)
     second = replay(events)
     assert first == second
-    assert first.actions["door-1"].executed_at == 3
-    assert first.approvals["ap-1"].revoked_at is None
+    assert first.actions[scope_key("wf-demo", "door-1")].executed_at == 3
+    assert first.approvals[scope_key("wf-demo", "ap-1")].revoked_at is None
 
 
 def test_revocation_race_is_rejected_independently_of_baseline():
@@ -52,7 +52,7 @@ def test_counterexample_reduction_preserves_failure():
 def test_temporal_enforcement_blocks_sensitive_commit_and_preserves_protected_state():
     state, blocked = enforce_temporal(SCENARIOS["revoked_approval_race"]().events)
     assert blocked == ["e4"]
-    assert state.actions["door-1"].executed_at is None
+    assert state.actions[scope_key("wf-demo", "door-1")].executed_at is None
 
 
 def test_repair_validation_drops_bad_execution():
@@ -93,6 +93,7 @@ def test_overview_reports_actual_catalog_metrics_and_simulator_boundary():
     overview = client.get("/api/chronicle/overview").json()
     assert overview["metrics"]["workflow_runs"] >= 8
     assert overview["metrics"]["baseline_divergences"] >= 1
+    assert overview["scenario"]["event_count"] == 5
     integrations = client.get("/api/chronicle/integrations").json()
     assert integrations["status"] == "simulator-only"
     assert integrations["optional"][0]["status"] == "unconfigured"
@@ -107,6 +108,35 @@ def test_static_console_compatibility_routes_are_json_backed():
     assert run.status_code == 200
     assert run.json()["outcome"] == "REJECTED"
     assert run.json()["events"][0]["event_id"] == "e1"
+    assert run.json()["scenario"]["event_count"] == 5
+    assert run.json()["scenario"]["event_ids"] == ["e1", "e2", "e3", "e4", "e5"]
+    assert run.json()["scenario"]["name"] == "revoked_approval_race"
+
+
+def test_trace_routes_resolve_requested_scenario_and_reject_unknown_trace():
+    trace = client.get("/api/chronicle/traces/SCN-001")
+    timeline = client.get("/api/chronicle/timeline/SCN-001")
+    comparison = client.get("/api/chronicle/comparisons/SCN-001")
+
+    assert trace.status_code == timeline.status_code == comparison.status_code == 200
+    assert trace.json()["scenario_id"] == "SCN-001"
+    assert trace.json()["verification"]["valid"] is True
+    assert timeline.json()["events"][0]["event_id"] == "e1"
+    assert comparison.json()["verifier"]["valid"] is True
+    assert client.get("/api/chronicle/traces/unknown-trace").status_code == 404
+
+
+def test_flagship_and_happy_path_routes_expose_complete_enforcement_contract():
+    happy = client.post("/api/chronicle/scenarios/SCN-001/run").json()
+    flagship = client.post("/api/chronicle/scenarios/SCN-042/run").json()
+
+    assert happy["outcome"] == "ALLOW"
+    assert happy["enforcement"]["blocked_event_ids"] == []
+    assert happy["enforcement"]["state"]["actions"][scope_key("wf-demo", "door-1")]["executed_at"] == 3
+    assert flagship["outcome"] == "REJECTED"
+    assert flagship["verification"]["first_violation_event_id"] == "e4"
+    assert flagship["enforcement"]["blocked_event_ids"] == ["e4"]
+    assert flagship["enforcement"]["state"]["actions"][scope_key("wf-demo", "door-1")]["executed_at"] is None
 
 
 def test_demo_login_and_me(monkeypatch):
@@ -179,6 +209,11 @@ def test_mobile_scenario_ids_are_all_runnable():
     for scenario in catalog:
         response = client.post(f"/api/chronicle/scenarios/{scenario['id']}/run")
         assert response.status_code == 200
+        body = response.json()
+        assert body["scenario_id"] == scenario["id"]
+        assert body["scenario"]["event_count"] == len(body["scenario"]["events"])
+        assert body["scenario"]["event_ids"] == [event["id"] for event in body["scenario"]["events"]]
+        assert body["events"]
 
 
 def test_health_identifies_veylith_service():
@@ -195,3 +230,88 @@ def test_production_environment_disables_demo_login_without_explicit_opt_in(monk
     response = client.post("/api/auth/login", json={"email": "reviewer@example.com", "password": "demo-password"})
     assert response.status_code == 503
     assert "production" in response.json()["detail"]
+
+
+def test_workflow_scope_prevents_cross_workflow_approval_reuse():
+    events = [
+        Event(id="a-request", kind=EventKind.ACTION_REQUESTED, at=1, action_id="shared-action", actor="alice", workflow_id="workflow-a"),
+        Event(id="a-approval", kind=EventKind.APPROVAL_GRANTED, at=2, action_id="shared-action", actor="owner", workflow_id="workflow-a", approval_id="shared-approval"),
+        Event(id="b-request", kind=EventKind.ACTION_REQUESTED, at=3, action_id="shared-action", actor="bob", workflow_id="workflow-b"),
+        Event(id="b-execute", kind=EventKind.ACTION_EXECUTED, at=4, action_id="shared-action", actor="bob", workflow_id="workflow-b"),
+    ]
+
+    result = verify(events)
+
+    assert any(violation.code == "execution_without_approval" for violation in result.violations)
+    state = replay(events)
+    assert set(state.actions) == {scope_key("workflow-a", "shared-action"), scope_key("workflow-b", "shared-action")}
+    assert state.actions[scope_key("workflow-b", "shared-action")].executed_at == 4
+
+
+def test_cancelled_action_is_terminal_and_blocked_from_protected_state():
+    events = [
+        Event(id="e1", kind=EventKind.ACTION_REQUESTED, at=1, action_id="cancel-me", actor="alice"),
+        Event(id="e2", kind=EventKind.APPROVAL_GRANTED, at=2, action_id="cancel-me", actor="owner", approval_id="ap-cancel"),
+        Event(id="e3", kind=EventKind.ACTION_CANCELLED, at=3, action_id="cancel-me", actor="alice"),
+        Event(id="e4", kind=EventKind.ACTION_EXECUTED, at=4, action_id="cancel-me", actor="alice"),
+    ]
+
+    result = verify(events)
+    state, blocked = enforce_temporal(events)
+
+    assert any(violation.code == "execution_after_cancellation" for violation in result.violations)
+    assert blocked == ["e4"]
+    assert state.actions[scope_key("wf-demo", "cancel-me")].cancelled_at == 3
+    assert state.actions[scope_key("wf-demo", "cancel-me")].executed_at is None
+
+
+def test_malformed_expiry_and_empty_trace_return_structured_results():
+    malformed = [
+        Event(id="e1", kind=EventKind.ACTION_REQUESTED, at=1, action_id="bad-expiry", actor="alice"),
+        Event(id="e2", kind=EventKind.APPROVAL_GRANTED, at=2, action_id="bad-expiry", actor="owner", approval_id="ap-bad", payload={"expires_at": "not-a-time"}),
+        Event(id="e3", kind=EventKind.ACTION_EXECUTED, at=3, action_id="bad-expiry", actor="alice"),
+    ]
+
+    result = verify(malformed)
+
+    assert any(violation.code == "malformed_approval_expiry" for violation in result.violations)
+    assert any(violation.code == "execution_without_approval" for violation in result.violations)
+    assert verify([]).valid is False
+    assert verify([]).violations[0].code == "empty_trace"
+
+
+def test_identical_duplicate_delivery_is_idempotent_but_conflicting_reuse_is_quarantined():
+    base = SCENARIOS["happy_path"]().events
+    identical = base[:2] + [base[1]] + base[2:]
+    conflicting = base[:2] + [base[1].model_copy(update={"actor": "attacker"})] + base[2:]
+
+    identical_state, identical_blocked = enforce_temporal(identical)
+    conflicting_state, conflicting_blocked = enforce_temporal(conflicting)
+
+    assert any(violation.code == "duplicate_event" for violation in verify(identical).violations)
+    assert identical_blocked == []
+    assert identical_state.actions[scope_key("wf-demo", "door-1")].executed_at == 3
+    assert any(violation.code == "conflicting_duplicate_event" for violation in verify(conflicting).violations)
+    assert conflicting_blocked == ["e2", "e3"]
+    assert conflicting_state.actions[scope_key("wf-demo", "door-1")].executed_at is None
+
+
+def test_invalid_prefix_cannot_reach_protected_execution():
+    out_of_order = [
+        Event(id="e1", kind=EventKind.ACTION_REQUESTED, at=2, action_id="unsafe", actor="alice"),
+        Event(id="e2", kind=EventKind.APPROVAL_GRANTED, at=1, action_id="unsafe", actor="owner", approval_id="ap-unsafe"),
+        Event(id="e3", kind=EventKind.ACTION_EXECUTED, at=3, action_id="unsafe", actor="alice"),
+    ]
+    unknown_reference = [
+        Event(id="e1", kind=EventKind.ACTION_REQUESTED, at=1, action_id="unsafe", actor="alice"),
+        Event(id="e2", kind=EventKind.APPROVAL_REVOKED, at=2, action_id="unsafe", actor="owner", approval_id="missing"),
+        Event(id="e3", kind=EventKind.ACTION_EXECUTED, at=3, action_id="unsafe", actor="alice"),
+    ]
+
+    out_state, out_blocked = enforce_temporal(out_of_order)
+    unknown_state, unknown_blocked = enforce_temporal(unknown_reference)
+
+    assert out_blocked == ["e2", "e3"]
+    assert unknown_blocked == ["e2", "e3"]
+    assert out_state.actions[scope_key("wf-demo", "unsafe")].executed_at is None
+    assert unknown_state.actions[scope_key("wf-demo", "unsafe")].executed_at is None

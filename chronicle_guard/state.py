@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .model import Approval, ActionRecord, Event, EventKind, EvidenceRecord, GuardState
+from .model import Approval, ActionRecord, Event, EventKind, EvidenceRecord, GuardState, scope_key
 
 
 def apply_event(state: GuardState, event: Event) -> GuardState:
@@ -17,16 +17,19 @@ def apply_event(state: GuardState, event: Event) -> GuardState:
         return next_state
     logical_time = event.logical_time
     next_state.clock = max(next_state.clock, logical_time)
+    action_key = scope_key(event.workflow_id, event.action_id)
 
     if event.kind is EventKind.ACTION_REQUESTED:
-        next_state.actions[event.action_id] = ActionRecord(
+        next_state.actions[action_key] = ActionRecord(
+            workflow_id=event.workflow_id,
             action_id=event.action_id,
             requested_at=logical_time,
             requested_by=event.actor,
         )
     elif event.kind is EventKind.APPROVAL_GRANTED:
         approval_id = event.approval_id or event.id
-        next_state.approvals[approval_id] = Approval(
+        next_state.approvals[scope_key(event.workflow_id, approval_id)] = Approval(
+            workflow_id=event.workflow_id,
             approval_id=approval_id,
             action_id=event.action_id,
             actor=event.actor,
@@ -34,17 +37,25 @@ def apply_event(state: GuardState, event: Event) -> GuardState:
         )
     elif event.kind is EventKind.APPROVAL_REVOKED:
         approval_id = event.approval_id
-        if approval_id and approval_id in next_state.approvals:
-            next_state.approvals[approval_id].revoked_at = logical_time
+        approval = next_state.approvals.get(scope_key(event.workflow_id, approval_id)) if approval_id else None
+        if approval and approval.action_id == event.action_id:
+            approval.revoked_at = logical_time
     elif event.kind is EventKind.ACTION_EXECUTED:
-        action = next_state.actions.get(event.action_id)
-        if action:
+        action = next_state.actions.get(action_key)
+        if action and action.cancelled_at is None:
             action.executed_at = logical_time
             action.executed_by = event.actor
             action.execution_event_id = event.id
+    elif event.kind is EventKind.ACTION_CANCELLED:
+        action = next_state.actions.get(action_key)
+        if action and action.cancelled_at is None and action.executed_at is None:
+            action.cancelled_at = logical_time
+            action.cancelled_by = event.actor
+            action.cancellation_event_id = event.id
     elif event.kind is EventKind.EVIDENCE_RECORDED:
         evidence_id = event.evidence_id or event.id
-        next_state.evidence[evidence_id] = EvidenceRecord(
+        next_state.evidence[scope_key(event.workflow_id, evidence_id)] = EvidenceRecord(
+            workflow_id=event.workflow_id,
             evidence_id=evidence_id,
             action_id=event.action_id,
             recorded_at=logical_time,

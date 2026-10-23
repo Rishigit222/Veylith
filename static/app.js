@@ -3,6 +3,7 @@
   'use strict';
 
   const API_ROOT = window.CHRONICLE_API_BASE || '/api/chronicle';
+  const CORE_ROOT = API_ROOT.replace(/\/api\/chronicle\/?$/, '/api');
   const AUTH_ROOT = API_ROOT.replace(/\/api\/chronicle\/?$/, '/api');
   const RING_ROOT = API_ROOT.replace(/\/api\/chronicle\/?$/, '/api/ring');
   const state = {
@@ -12,6 +13,11 @@
     scenarioCatalog: [],
     tracePaused: false,
     activityRange: '24h',
+    selectedFindingId: null,
+    lastVerification: null,
+    currentRun: null,
+    selectedTimelineEventId: null,
+    offline: false,
     loaded: {},
   };
 
@@ -63,14 +69,31 @@
   }
 
   async function fetchJson(path, options = {}, fallback = null) {
+    const startedAt = performance.now();
     try {
       const response = await fetch(`${API_ROOT}${path}`, { headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) }, ...options });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      state.offline = false;
+      updateConnectionPill(true, Math.round(performance.now() - startedAt));
       return await response.json();
     } catch (error) {
+      state.offline = true;
+      updateConnectionPill(false);
       if (fallback !== null) return { ...fallback, __mock: true };
       throw error;
     }
+  }
+
+  function updateConnectionPill(connected, latency = null) {
+    const pill = qs('.connection-pill');
+    if (!pill) return;
+    pill.classList.toggle('offline', !connected);
+    const dot = pill.querySelector('.status-dot');
+    const label = pill.querySelector('span:nth-child(2)');
+    const metric = pill.querySelector('.mono');
+    dot?.classList.toggle('online', connected);
+    label.textContent = connected ? 'API CONNECTED' : 'API OFFLINE';
+    metric.textContent = connected && latency !== null ? `${latency}ms` : '—';
   }
 
   function setView(view) {
@@ -86,18 +109,35 @@
 
   async function loadViewData(view) {
     state.loaded[view] = true;
-    const routes = { overview: '/overview', runs: '/agent-runs', scenario: '/scenarios', trace: '/traces/trace-7f3a', timeline: '/timeline/trace-7f3a', comparison: '/comparisons/trace-7f3a', repair: '/repairs', evidence: '/evidence/exports', integrations: '/integrations' };
-    const fallback = view === 'scenario' ? { scenarios: Object.values(mocks.scenarios) } : {};
-    const data = await fetchJson(routes[view], {}, fallback);
-    if (data.__mock) toast('Showing local fixture data', 'error', 'The API is unavailable; actions remain previewable in this static console.');
-    if (view === 'overview') { if (data.recent) renderRecent(data.recent); if (data.metrics) renderOverviewMetrics(data.metrics); }
-    if (view === 'runs') renderAgentRuns(data.runs);
-    if (view === 'trace') { renderTrace(data.events || mocks.events); renderTraceSummary(data.verification, data.baseline); }
-    if (view === 'timeline') renderTimeline(data.events || mocks.events);
-    if (view === 'scenario') { state.scenarioCatalog = Array.isArray(data.scenarios) ? data.scenarios : []; renderScenarioCatalog(state.scenarioCatalog); }
-    if (view === 'comparison') renderComparison(data);
-    if (view === 'repair') renderRepairFindings(data.findings);
-    if (view === 'integrations') renderIntegrationStatus(data);
+    const selectedTrace = encodeURIComponent(state.scenarioId || 'SCN-042');
+    const routes = { overview: '/overview', runs: '/agent-runs', scenario: '/scenarios', trace: `/traces/${selectedTrace}`, timeline: `/timeline/${selectedTrace}`, comparison: `/comparisons/${selectedTrace}`, repair: '/repairs', evidence: '/evidence/exports', integrations: '/integrations' };
+    try {
+      const data = await fetchJson(routes[view]);
+      if (view === 'overview') { if (data.recent) renderRecent(data.recent); if (data.metrics) renderOverviewMetrics(data.metrics); if (data.scenario) renderOverviewScenario(data.scenario); }
+      if (view === 'runs') renderAgentRuns(data.runs);
+      if (view === 'trace') renderRun(data);
+      if (view === 'timeline') renderTimeline(data.events || []);
+      if (view === 'scenario') { state.scenarioCatalog = Array.isArray(data.scenarios) ? data.scenarios : []; renderScenarioCatalog(state.scenarioCatalog); }
+      if (view === 'comparison') renderComparison(data);
+      if (view === 'repair') renderRepairFindings(data.findings);
+      if (view === 'evidence') renderEvidence(data);
+      if (view === 'integrations') renderIntegrationStatus(data);
+    } catch (error) {
+      renderOfflineView(view, error);
+    }
+  }
+
+  function renderOfflineView(view, error) {
+    const detail = error instanceof Error ? error.message : 'The API is unavailable.';
+    toast('API offline', 'error', 'Live verification data is unavailable; no fixture metrics are being presented.');
+    if (view === 'scenario') { state.scenarioCatalog = []; renderScenarioCatalog([]); }
+    if (view === 'runs') renderAgentRuns([]);
+    if (view === 'trace') { state.currentRun = null; state.lastVerification = null; renderTrace([]); renderTraceSummary({}, {}); }
+    if (view === 'timeline') renderTimeline([]);
+    if (view === 'comparison') renderComparison({});
+    if (view === 'evidence') renderEvidence({});
+    if (view === 'overview') renderOverviewMetrics({});
+    console.warn(`Veylith ${view} view unavailable: ${detail}`);
   }
 
   function renderOverviewMetrics(metrics = {}) {
@@ -126,13 +166,20 @@
 
   function renderRepairFindings(findings = []) {
     const root = qs('.finding-list');
-    if (!root || !Array.isArray(findings) || !findings.length) return;
+    if (!root) return;
     const header = root.querySelector('.panel-heading')?.outerHTML || '';
-    root.innerHTML = `${header}${findings.map((finding, index) => `<button class="finding${index === 0 ? ' selected' : ''}" data-finding-id="${esc(finding.finding_id)}"><span class="severity ${finding.code === 'revoked_approval_race' ? 'high' : 'medium'}">${finding.code === 'revoked_approval_race' ? 'H' : 'M'}</span><span><b>${esc(finding.code.replaceAll('_', ' '))}</b><small>${esc(finding.scenario_id)} · ${esc(finding.status || 'PENDING')}</small></span><span class="finding-chevron">›</span></button>`).join('')}`;
+    if (!Array.isArray(findings) || !findings.length) {
+      root.innerHTML = `${header}<div class="empty-state">No live findings returned by the verifier.</div>`;
+      return;
+    }
+    if (!state.selectedFindingId || !findings.some((finding) => finding.finding_id === state.selectedFindingId)) state.selectedFindingId = findings[0].finding_id;
+    root.innerHTML = `${header}${findings.map((finding) => `<button class="finding${finding.finding_id === state.selectedFindingId ? ' selected' : ''}" data-finding-id="${esc(finding.finding_id)}"><span class="severity ${finding.code === 'revoked_approval_race' ? 'high' : 'medium'}">${finding.code === 'revoked_approval_race' ? 'H' : 'M'}</span><span><b>${esc(finding.code.replaceAll('_', ' '))}</b><small>${esc(finding.scenario_id)} · ${esc(finding.status || 'PENDING')}</small></span><span class="finding-chevron">›</span></button>`).join('')}`;
   }
 
-  function renderRecent(rows = mocks.recent) {
-    qs('#recent-decisions').innerHTML = rows.map((row) => `<tr><td>${esc(row[0])}</td><td>${esc(row[1])}</td><td><span class="result ${row[2] === 'ALLOW' ? 'allow' : 'reject'}">${esc(row[2])}</span></td><td>${esc(row[3])}</td></tr>`).join('');
+  function renderRecent(rows = []) {
+    const root = qs('#recent-decisions');
+    if (!root) return;
+    root.innerHTML = rows.length ? rows.map((row) => `<tr><td>${esc(row[0])}</td><td>${esc(row[1])}</td><td><span class="result ${row[2] === 'ALLOW' ? 'allow' : 'reject'}">${esc(row[2])}</span></td><td>${esc(row[3])}</td></tr>`).join('') : '<tr><td colspan="4">No live decisions available.</td></tr>';
   }
 
   function renderAgentRuns(runs = []) {
@@ -142,25 +189,44 @@
     root.innerHTML = runs.map((run) => `<tr><td class="mono">${esc(run.run_id || run.id || '—')}</td><td>${esc(run.name || run.scenario_id || '—')}</td><td><span class="result ${run.outcome === 'ALLOW' ? 'allow' : 'reject'}">${esc(run.outcome || 'UNKNOWN')}</span></td><td>${esc((run.violation_codes || []).join(', ') || 'none')}</td><td class="mono">${esc(String(run.evidence_hash || '').slice(0, 12) || '—')}</td></tr>`).join('');
   }
 
-  function renderBars(range = '24h') {
-    const values = range === '7d' ? [48, 51, 57, 52, 64, 68, 75, 73, 78, 85, 81, 92] : range === '30d' ? [42, 48, 46, 59, 54, 62, 69, 65, 77, 74, 85, 91] : [28, 38, 34, 47, 45, 65, 58, 78, 72, 89, 84, 96];
-    qs('#activity-chart').innerHTML = values.map((height, index) => `<i class="bar" style="--h:${height}%;--r:${index % 4 === 0 ? '7%' : '3%'}"></i>`).join('');
+  function renderBars(values = null) {
+    const chart = qs('#activity-chart');
+    if (!chart) return;
+    chart.innerHTML = Array.isArray(values) && values.length ? values.map((height, index) => `<i class="bar" style="--h:${height}%;--r:${index % 4 === 0 ? '7%' : '3%'}"></i>`).join('') : '<div class="empty-state">No persisted time-series in this build.</div>';
   }
 
   function scenarioKindClass(kind) { return kind.toLowerCase() === 'authority' ? 'authority' : kind.toLowerCase() === 'verify' ? 'verifier' : kind.toLowerCase() === 'commit' ? 'commit' : ''; }
 
-  function renderScenario(scenario = mocks.scenarios[state.scenario]) {
+  function scenarioEventRow(event) {
+    if (Array.isArray(event)) return event;
+    const eventKind = String(event.kind || event.event_kind || 'event');
+    const role = eventKind.includes('approval') ? 'AUTHORITY' : eventKind.includes('execut') ? 'COMMIT' : eventKind.includes('evidence') ? 'VERIFY' : eventKind.includes('instruction') ? 'UNTRUSTED' : 'CALLER';
+    return [
+      role,
+      eventKind.replaceAll('_', ' '),
+      `${event.actor || 'unknown'} · ${event.action_id || 'unscoped'}`,
+      `t+${String(event.event_time ?? event.at ?? event.logical_time ?? 0).padStart(3, '0')}ms`,
+      scenarioKindClass(role),
+    ];
+  }
+
+  function renderScenario(scenario = { id: '—', name: 'No scenario selected', description: 'Select a live catalog scenario to inspect its verified event stream.', events: [] }) {
     scenario = { ...scenario, events: Array.isArray(scenario?.events) ? scenario.events : [] };
     qs('#scenario-id').textContent = scenario.id;
-    qs('#scenario-name').textContent = scenario.name;
+    qs('#scenario-name').textContent = scenario.display_name || scenario.name;
     qs('#scenario-description').textContent = scenario.description;
-    qs('#event-stack').innerHTML = scenario.events.length ? scenario.events.map((event, index) => `<div class="event-row"><span class="event-index">${String(index + 1).padStart(2, '0')}</span><span class="event-kind ${scenarioKindClass(event[0])}">${esc(event[0])}</span><span class="event-desc"><b>${esc(event[1])}</b><small>${esc(event[2])}</small></span><span class="event-time">${esc(event[3])}</span><button class="remove-event" type="button" data-action="remove-event" aria-label="Remove event">×</button></div>`).join('') : '<div class="empty-state">No events yet. Add a fact to begin a custom sequence.</div>';
+    qs('#event-stack').innerHTML = scenario.events.length ? scenario.events.map((rawEvent, index) => { const event = scenarioEventRow(rawEvent); return `<div class="event-row"><span class="event-index">${String(index + 1).padStart(2, '0')}</span><span class="event-kind ${scenarioKindClass(event[0])}">${esc(event[0])}</span><span class="event-desc"><b>${esc(event[1])}</b><small>${esc(event[2])}</small></span><span class="event-time">${esc(event[3])}</span><button class="remove-event" type="button" data-action="remove-event" aria-label="Remove event">×</button></div>`; }).join('') : '<div class="empty-state">No live events loaded. Select a catalog scenario to inspect its verified trace.</div>';
   }
 
   function renderScenarioCatalog(scenarios) {
-    if (!Array.isArray(scenarios) || !scenarios.length) return;
     const root = qs('.scenario-items');
     if (!root) return;
+    const count = qs('.scenario-list .count-pill');
+    if (count) count.textContent = Array.isArray(scenarios) && scenarios.length ? `${scenarios.length} total` : 'OFFLINE';
+    if (!Array.isArray(scenarios) || !scenarios.length) {
+      root.innerHTML = '<div class="empty-state">Live scenario catalog unavailable. Start the API to load verified scenarios.</div>';
+      return;
+    }
     root.innerHTML = scenarios.map((scenario, index) => {
       const id = scenario.id || `SCN-${index}`;
       const selected = id === state.scenarioId ? ' selected' : '';
@@ -169,31 +235,140 @@
     }).join('');
   }
 
-  function renderTrace(events = mocks.events) {
-    qs('#trace-stream').innerHTML = events.map((event) => `<div class="trace-line"><span class="time">${esc(event.time)}</span><span class="kind ${esc(event.cls || '')}">${esc(event.kind)}</span><p><strong>${esc(event.label)}</strong><br/><span>${esc(event.detail)}</span></p><span class="trace-check">✓</span></div>`).join('');
-    qs('#assertion-list').innerHTML = mocks.assertions.map(([name, detail]) => `<div class="assertion"><i>✓</i><span><b>${esc(name)}</b><small>${esc(detail)}</small></span></div>`).join('');
+  function renderOverviewScenario(scenario = {}) {
+    const card = qs('.scenario-card');
+    if (!card) return;
+    const eventCount = card.querySelector('.scenario-meta span:nth-child(2) b');
+    const status = card.querySelector('.status-badge');
+    if (eventCount && scenario.event_count !== undefined) eventCount.textContent = String(scenario.event_count);
+    if (status && scenario.outcome) { status.textContent = scenario.outcome; status.classList.toggle('warning', scenario.outcome !== 'ALLOW'); status.classList.toggle('ready', scenario.outcome === 'ALLOW'); }
   }
 
-  function renderTraceSummary(verification = {}, baseline = {}) {
+  async function selectScenario(scenarioId) {
+    state.scenarioId = scenarioId;
+    if (scenarioId === 'SCN-NEW') {
+      state.currentRun = null;
+      renderScenario({ id: 'SCN-NEW', name: 'Custom sequence', description: 'Custom event submission is intentionally disabled until a typed event editor is connected to the verifier.', events: [] });
+      return;
+    }
+    const catalogItem = state.scenarioCatalog.find((item) => item.id === scenarioId);
+    try {
+      const result = await fetchJson(`/scenarios/${encodeURIComponent(scenarioId)}/run`, { method: 'POST', body: JSON.stringify({ scenario_id: scenarioId }) });
+      state.currentRun = result;
+      state.lastVerification = result.verification || null;
+      renderScenario(result.scenario || { id: scenarioId, name: catalogItem?.name || scenarioId, description: catalogItem?.description || 'API-backed deterministic scenario', events: [] });
+    } catch (error) {
+      renderScenario({ id: scenarioId, name: catalogItem?.name || scenarioId, description: 'Scenario metadata loaded, but its event stream could not be fetched.', events: [] });
+      toast('Scenario preview unavailable', 'error', error instanceof Error ? error.message : 'The API did not return events.');
+    }
+  }
+
+  function renderTrace(events = [], verification = state.lastVerification) {
+    const stream = qs('#trace-stream');
+    if (!stream) return;
+    if (!events.length) {
+      stream.innerHTML = '<div class="empty-state">No replay loaded. Run a verified scenario to populate the trace.</div>';
+    } else {
+      stream.innerHTML = events.map((event) => `<div class="trace-line${event.violation_codes?.length ? ' violation' : ''}"><span class="time">${esc(event.time)}</span><span class="kind ${esc(event.cls || '')}">${esc(event.kind)}</span><p><strong>${esc(event.label)}</strong><br/><span>${esc(event.detail)}${event.violation_codes?.length ? ` · ${esc(event.violation_codes.join(', '))}` : ''}</span></p><span class="trace-check">${event.violation_codes?.length ? '!' : '✓'}</span></div>`).join('');
+    }
+    const violations = Array.isArray(verification?.violations) ? verification.violations : [];
+    const assertions = verification?.checked_event_ids?.length ? verification.checked_event_ids.map((eventId) => {
+      const finding = violations.find((violation) => violation.event_id === eventId);
+      return [eventId, finding ? finding.message : 'event passed the bounded verifier checks', !finding];
+    }) : mocks.assertions.map(([name, detail]) => [name, detail, true]);
+    const assertionList = qs('#assertion-list');
+    if (assertionList) assertionList.innerHTML = assertions.length ? assertions.map(([name, detail, passed]) => `<div class="assertion"><i class="${passed ? '' : 'failed'}">${passed ? '✓' : '!'}</i><span><b>${esc(name)}</b><small>${esc(detail)}</small></span></div>`).join('') : '<div class="empty-state">Assertions appear after a replay.</div>';
+  }
+
+  function renderRun(result = {}) {
+    state.currentRun = result;
+    state.lastVerification = result.verification || null;
+    renderTrace(result.events || [], result.verification);
+    renderTraceSummary(result.verification, result.baseline, result);
+    renderTimeline(result.events || []);
+    renderComparison({ baseline: result.baseline, verifier: result.verification, scenario: result.scenario, enforcement: result.enforcement });
+    renderScenario(result.scenario || {});
+    const streamStatus = qs('.stream-status');
+    if (streamStatus) streamStatus.innerHTML = `<i></i> REPLAY COMPLETE <span class="mono">${esc(result.scenario_id || 'unknown')}</span>`;
+    const tracePanel = qs('.trace-panel .panel-heading');
+    if (tracePanel) {
+      const heading = tracePanel.querySelector('h2');
+      const eyebrow = tracePanel.querySelector('.eyebrow');
+      if (heading) heading.textContent = result.scenario?.display_name || result.scenario?.name || 'Verified replay';
+      if (eyebrow) eyebrow.textContent = `EXECUTION / ${result.scenario_id || 'UNKNOWN'}`;
+    }
+  }
+
+  function renderTraceSummary(verification = {}, baseline = {}, result = {}) {
     const summary = qs('.trace-summary');
     if (!summary) return;
-    const outcome = verification.valid ? 'ALLOWED' : 'REJECTED';
+    const outcome = verification.valid ? 'ALLOWED' : verification.checked_event_ids?.length ? 'REJECTED' : 'AWAITING REPLAY';
     const violations = Array.isArray(verification.violations) ? verification.violations.length : 0;
-    summary.innerHTML = `<div><span>OUTCOME</span><b class="${verification.valid ? 'lime-text' : 'danger-text'}">${outcome}</b></div><div><span>EVENTS</span><b class="mono">${(verification.checked_event_ids || []).length}</b></div><div><span>VIOLATIONS</span><b>${violations}</b></div><div><span>BASELINE</span><b class="${baseline.allowed ? 'danger-text' : 'lime-text'}">${baseline.allowed ? 'ALLOW' : 'REJECT'}</b></div>`;
+    const blocked = result.enforcement?.blocked_event_ids?.length || 0;
+    summary.innerHTML = `<div><span>OUTCOME</span><b class="${verification.valid ? 'lime-text' : verification.checked_event_ids?.length ? 'danger-text' : ''}">${outcome}</b></div><div><span>EVENTS</span><b class="mono">${(verification.checked_event_ids || []).length}</b></div><div><span>FINDINGS</span><b>${violations}</b></div><div><span>BLOCKED</span><b class="${blocked ? 'danger-text' : 'lime-text'}">${blocked}</b></div>`;
+    const assertionCount = qs('.assertion-panel .count-pill');
+    if (assertionCount) assertionCount.textContent = verification.checked_event_ids?.length ? `${Math.max(0, (verification.checked_event_ids || []).length - violations)} / ${verification.checked_event_ids.length}` : '—';
+    const assertionStatus = qs('.assertion-panel .status-badge');
+    if (assertionStatus) { assertionStatus.textContent = violations ? `${violations} FINDING${violations === 1 ? '' : 'S'}` : verification.checked_event_ids?.length ? 'ALL CHECKS PASS' : 'AWAITING REPLAY'; assertionStatus.className = `status-badge ${violations ? 'warning' : 'pass'}`; }
   }
 
   function renderComparison(data = {}) {
     const root = qs('.comparison-summary');
-    if (!root || !data.baseline || !data.verifier) return;
+    if (!root) return;
+    if (!data.baseline || !data.verifier) {
+      root.innerHTML = '<div class="empty-state">Run a verified scenario to compare the baseline and temporal verifier.</div>';
+      return;
+    }
     const baseline = data.baseline;
     const verifier = data.verifier;
     const primary = verifier.violations?.[0];
     root.innerHTML = `<div class="compare-score baseline"><span class="eyebrow">LEGACY BASELINE</span><strong>${baseline.allowed ? 'ALLOW' : 'REJECT'}</strong><small>${esc((baseline.reasons || []).join(', ') || 'presence checks passed')}</small></div><div class="compare-arrow">→<small>${baseline.allowed === verifier.valid ? 'aligned' : 'diverged'}</small></div><div class="compare-score verifier"><span class="eyebrow">CHRONICLE VERIFIER</span><strong>${verifier.valid ? 'ALLOW' : 'REJECT'}</strong><small>${esc(primary?.code || 'all invariants valid')}</small></div><div class="compare-reason"><span class="eyebrow">PRIMARY FINDING</span><b>${esc(primary?.code || 'no divergence')}</b><p>${esc(primary?.message || 'The bounded trace passed temporal checks.')}</p></div>`;
+    const heading = qs('.diff-panel .eyebrow');
+    if (heading) heading.textContent = `DECISION DIFF / ${data.scenario?.id || data.scenario_id || state.scenarioId}`;
+    const status = qs('[data-view-panel="comparison"] .heading-actions .status-badge');
+    if (status) { status.textContent = `${verifier.violations?.length || 0} FINDING${verifier.violations?.length === 1 ? '' : 'S'}`; status.className = `status-badge ${verifier.violations?.length ? 'warning' : 'ready'}`; }
+    const rows = qsa('.diff-panel .diff-row:not(.diff-header)');
+    if (rows[0]) {
+      const values = rows[0].querySelectorAll('.code-value, .delta');
+      if (values[0]) values[0].textContent = baseline.allowed ? 'ALLOW' : 'REJECT';
+      if (values[1]) values[1].textContent = verifier.valid ? 'ALLOW' : 'REJECT';
+      if (values[2]) values[2].textContent = baseline.allowed === verifier.valid ? '=' : '≠';
+    }
+    if (rows[1]) {
+      const values = rows[1].querySelectorAll('.code-value, .delta');
+      const blocked = data.enforcement?.blocked_event_ids || [];
+      if (values[0]) values[0].textContent = 'projected';
+      if (values[1]) values[1].textContent = blocked.length ? `blocked (${blocked.join(', ')})` : 'committed';
+      if (values[2]) values[2].textContent = blocked.length ? 'SAFE' : 'PASS';
+    }
+  }
+
+  function renderEvidence(data = {}) {
+    const root = qs('[data-view-panel="evidence"]');
+    if (!root) return;
+    const status = root.querySelector('.export-builder .status-badge');
+    if (status) status.textContent = 'HASH-LINKED OUTPUT';
+    const formatSelect = root.querySelector('.field-grid select');
+    [...(formatSelect?.options || [])].forEach((option) => { if (/signed/i.test(option.textContent)) option.remove(); });
+    const signingField = [...root.querySelectorAll('.field')].find((field) => /signing key/i.test(field.textContent));
+    if (signingField) {
+      const label = signingField.querySelector('span');
+      const select = signingField.querySelector('select');
+      if (label) label.textContent = 'CHAIN MODE';
+      if (select) select.innerHTML = '<option>SHA-256 hash-linked evidence</option>';
+    }
+    const rows = qsa('.check-row', root);
+    const eventCount = Number(data.event_count || 0);
+    const violationCount = Array.isArray(data.verification?.violations) ? data.verification.violations.length : 0;
+    if (rows[0]) { rows[0].querySelector('b').textContent = 'Event stream'; rows[0].querySelector('small').textContent = `${eventCount} ordered events`; rows[0].querySelector('em').textContent = `${eventCount} items`; }
+    if (rows[1]) { rows[1].querySelector('b').textContent = 'Verifier result'; rows[1].querySelector('small').textContent = `${violationCount} bounded invariant findings`; rows[1].querySelector('em').textContent = `${violationCount} findings`; }
+    if (rows[2]) { rows[2].querySelector('b').textContent = 'Hash chain'; rows[2].querySelector('small').textContent = 'Detects later changes to the exported sequence'; rows[2].querySelector('em').textContent = `${eventCount} links`; }
   }
 
   async function downloadEvidence() {
     try {
-      const data = await fetchJson('/evidence/exports');
+      const selectedEvents = state.currentRun?.scenario?.events;
+      const data = selectedEvents ? await fetch(`${CORE_ROOT}/export`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ events: selectedEvents, include_state: true }) }).then(async (response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }) : await fetchJson('/evidence/exports');
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -214,7 +389,8 @@
   async function submitRepairReview() {
     const email = qs('#reviewer-email')?.value || '';
     const password = qs('#reviewer-password')?.value || '';
-    const finding = (await fetchJson('/repairs', {}, { findings: [] })).findings?.[0];
+    const findings = (await fetchJson('/repairs', {}, { findings: [] })).findings || [];
+    const finding = findings.find((item) => item.finding_id === state.selectedFindingId);
     if (!finding) { toast('No pending finding', 'error'); return; }
     try {
       const loginResponse = await fetch(`${AUTH_ROOT}/auth/login`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
@@ -229,25 +405,60 @@
     }
   }
 
-  function renderTimeline(events = mocks.events) {
-    const lanes = [{ label: 'CALLER', color: 'var(--cyan)' }, { label: 'AUTHORITY', color: 'var(--violet)' }, { label: 'VERIFIER', color: 'var(--amber)' }, { label: 'COMMIT', color: 'var(--lime)' }];
-    const points = [18, 29, 39, 52, 66, 86];
-    qs('#timeline-canvas').innerHTML = lanes.map((lane, laneIndex) => `<div class="lane" style="top:${laneIndex * 74}px"><span class="lane-label">${lane.label}</span><div class="lane-track">${events.filter((event) => event.kind === lane.label || (lane.label === 'COMMIT' && event.kind === 'RESULT')).map((event, index) => { const point = points[Math.min(index + laneIndex, points.length - 1)]; return `<button class="event-mark ${event.label === 'Approval revoked' ? 'active' : ''}" style="left:${point}%;--mark:${lane.color};--span:${Math.max(24, 72 - index * 10)}px" title="${esc(event.label)}"><span>${esc(event.time)}</span></button>`; }).join('')}</div></div>`).join('');
+  function renderTimeline(events = []) {
+    const canvas = qs('#timeline-canvas');
+    if (!canvas) return;
+    if (!events.length) {
+      canvas.innerHTML = '<div class="empty-state">No replay timeline available.</div>';
+      renderTimelineInspector(null);
+      return;
+    }
+    const lanes = [{ label: 'CALLER', color: 'var(--cyan)' }, { label: 'AUTHORITY', color: 'var(--violet)' }, { label: 'VERIFY', color: 'var(--amber)' }, { label: 'COMMIT', color: 'var(--lime)' }, { label: 'UNTRUSTED', color: 'var(--red)' }];
+    const maxTime = Math.max(...events.map((event) => Number(event.logical_time || 0)), 1);
+    const selected = events.find((event) => event.event_id === state.selectedTimelineEventId) || events.find((event) => event.violation_codes?.length) || events[events.length - 1];
+    state.selectedTimelineEventId = selected.event_id;
+    canvas.innerHTML = lanes.map((lane, laneIndex) => `<div class="lane" style="top:${laneIndex * 74}px"><span class="lane-label">${lane.label}</span><div class="lane-track">${events.filter((event) => event.kind === lane.label).map((event) => { const point = Math.min(94, Math.max(6, (Number(event.logical_time || 0) / maxTime) * 88 + 6)); return `<button class="event-mark ${event.event_id === selected.event_id ? 'active' : ''}" data-event-id="${esc(event.event_id)}" style="left:${point}%;--mark:${lane.color};--span:32px" title="${esc(event.label)}"><span>${esc(event.time)}</span></button>`; }).join('')}</div></div>`).join('');
+    renderTimelineInspector(selected);
+  }
+
+  function renderTimelineInspector(event) {
+    const inspector = qs('.timeline-inspector');
+    if (!inspector) return;
+    const heading = inspector.querySelector('h3');
+    const eyebrow = inspector.querySelector('.eyebrow');
+    const copy = inspector.querySelector('p');
+    const facts = inspector.querySelectorAll('.event-facts span b');
+    if (!event) {
+      if (eyebrow) eyebrow.textContent = 'SELECTED EVENT / —';
+      if (heading) heading.textContent = 'No event selected';
+      if (copy) copy.textContent = 'Run a verified scenario to inspect causal ordering and evidence.';
+      facts.forEach((fact) => { fact.textContent = '—'; });
+      return;
+    }
+    if (eyebrow) eyebrow.textContent = `SELECTED EVENT / ${event.time}`;
+    if (heading) heading.textContent = event.label;
+    if (copy) copy.innerHTML = `${esc(event.detail)} <code>${esc(event.event_id)}</code>${event.violation_codes?.length ? ` · <span class="danger-text">${esc(event.violation_codes.join(', '))}</span>` : ''}`;
+    if (facts[0]) facts[0].textContent = event.actor || '—';
+    if (facts[1]) facts[1].textContent = event.event_id || '—';
+    if (facts[2]) facts[2].textContent = event.violation_codes?.length ? 'finding' : 'verified';
   }
 
   async function runScenario() {
-    const scenario = state.scenarioCatalog.find((item) => item.id === state.scenarioId) || mocks.scenarios[state.scenario];
+    const scenario = state.scenarioCatalog.find((item) => item.id === state.scenarioId);
     if (!scenario) { toast('Select a scenario first', 'error'); return; }
+    if (state.scenarioId === 'SCN-NEW') { toast('Custom execution is not wired to the verifier yet', 'error', 'Use a catalog scenario or submit a typed event list to /api/verify.'); return; }
     setView('trace');
     qs('#trace-stream').classList.add('loading');
-    toast(`Executing ${scenario.name}`, 'success', 'Streaming verifier events…');
-    const result = await fetchJson(`/scenarios/${encodeURIComponent(scenario.id)}/run`, { method: 'POST', body: JSON.stringify({ scenario_id: scenario.id }) }, { events: mocks.events, outcome: 'REJECTED' });
-    renderTrace(result.events || mocks.events);
-    renderTraceSummary(result.verification, result.baseline);
-    renderComparison({ baseline: result.baseline, verifier: result.verification });
-    qs('#trace-stream').classList.remove('loading');
-    if (result.__mock) toast('Replay completed in fixture mode', 'error', 'Connect the planned scenario endpoint to run against the live verifier.');
-    else toast('Replay completed', 'success', `Outcome: ${result.outcome || 'REJECTED'}`);
+    toast(`Executing ${scenario.name}`, 'success', 'Running the deterministic verifier…');
+    try {
+      const result = await fetchJson(`/scenarios/${encodeURIComponent(scenario.id)}/run`, { method: 'POST', body: JSON.stringify({ scenario_id: scenario.id }) });
+      renderRun(result);
+      toast('Replay completed', 'success', `Outcome: ${result.outcome || 'REJECTED'}`);
+    } catch (error) {
+      renderOfflineView('trace', error);
+    } finally {
+      qs('#trace-stream').classList.remove('loading');
+    }
   }
 
   function openModal(title, body, actions = '') {
@@ -260,9 +471,9 @@
   function handleAction(action, target) {
     if (action === 'toggle-sidebar') qs('#sidebar').classList.toggle('open');
     if (action === 'refresh') { state.loaded = {}; loadViewData(state.view); toast('Data refreshed', 'success'); }
-    if (action === 'run-race') { state.scenario = 'revoked'; state.scenarioId = 'SCN-042'; renderScenario(); setView('scenario'); toast('Flagship race loaded', 'success', 'Press Execute sequence when ready.'); }
-    if (action === 'load-scenario') { state.scenario = 'custom'; state.scenarioId = 'SCN-NEW'; renderScenario(); setView('scenario'); toast('New scenario workspace ready', 'success', 'Add events to the local draft before executing.'); }
-    if (action === 'duplicate-scenario') { const original = mocks.scenarios[state.scenario] || mocks.scenarios.revoked; mocks.scenarios.custom.events = [...original.events]; state.scenario = 'custom'; state.scenarioId = 'SCN-NEW'; renderScenario(mocks.scenarios.custom); setView('scenario'); toast('Scenario duplicated locally', 'success', 'The draft is isolated from the catalog until execution.'); }
+    if (action === 'run-race') { state.scenarioId = 'SCN-042'; setView('scenario'); selectScenario('SCN-042'); toast('Flagship race loaded', 'success', 'Press Execute scenario when ready.'); }
+    if (action === 'load-scenario') { state.scenarioId = 'SCN-NEW'; renderScenario({ id: 'SCN-NEW', name: 'Custom sequence', description: 'Custom event submission is intentionally disabled until a typed event editor is connected to the verifier.', events: [] }); setView('scenario'); toast('Custom workspace opened', 'success', 'This build keeps custom execution disabled until the typed event contract is connected.'); }
+    if (action === 'duplicate-scenario') { toast('Duplicate flow unavailable', 'error', 'Choose a catalog scenario and run it from the live verifier.'); }
     if (action === 'run-scenario') runScenario();
     if (action === 'pause-trace') { state.tracePaused = !state.tracePaused; target.textContent = state.tracePaused ? '▶ Resume stream' : 'Ⅱ Pause stream'; toast(state.tracePaused ? 'Trace stream paused' : 'Trace stream resumed'); }
     if (action === 'clear-trace') { qs('#trace-stream').innerHTML = ''; toast('Trace cleared'); }
@@ -325,9 +536,11 @@
     const actionButton = event.target.closest('[data-action]');
     if (actionButton) { handleAction(actionButton.dataset.action, actionButton); return; }
     const scenarioButton = event.target.closest('[data-scenario-id]');
-    if (scenarioButton) { state.scenarioId = scenarioButton.dataset.scenarioId; const match = Object.entries(mocks.scenarios).find(([, item]) => item.id === state.scenarioId); if (match) state.scenario = match[0]; qsa('.scenario-item').forEach((item) => item.classList.toggle('selected', item === scenarioButton)); const selected = state.scenarioCatalog.find((item) => item.id === state.scenarioId) || mocks.scenarios[state.scenario]; renderScenario(selected ? { id: selected.id, name: selected.name, description: selected.description, events: mocks.scenarios[state.scenario]?.events || [] } : undefined); return; }
+    if (scenarioButton) { qsa('.scenario-item').forEach((item) => item.classList.toggle('selected', item === scenarioButton)); selectScenario(scenarioButton.dataset.scenarioId); return; }
+    const timelineEvent = event.target.closest('[data-event-id]');
+    if (timelineEvent && state.currentRun) { state.selectedTimelineEventId = timelineEvent.dataset.eventId; renderTimeline(state.currentRun.events || []); return; }
     const findingButton = event.target.closest('[data-finding-id]');
-    if (findingButton) { qsa('.finding').forEach((item) => item.classList.toggle('selected', item === findingButton)); toast('Finding selected', 'success', findingButton.dataset.findingId); return; }
+    if (findingButton) { state.selectedFindingId = findingButton.dataset.findingId; qsa('.finding').forEach((item) => item.classList.toggle('selected', item === findingButton)); toast('Finding selected', 'success', findingButton.dataset.findingId); return; }
     const rangeButton = event.target.closest('[data-range]');
     if (rangeButton) { state.activityRange = rangeButton.dataset.range; qsa('[data-range]').forEach((button) => button.classList.toggle('selected', button === rangeButton)); renderBars(state.activityRange); }
   });
@@ -338,11 +551,18 @@
     if (event.key.toLowerCase() === 'o' && event.altKey) setView('overview');
   });
 
+  document.addEventListener('input', (event) => {
+    if (event.target?.id !== 'scenario-search') return;
+    const query = event.target.value.trim().toLowerCase();
+    qsa('.scenario-item').forEach((item) => { item.hidden = query && !item.textContent.toLowerCase().includes(query); });
+  });
+
   loadViewData('overview');
   loadViewData('integrations');
-  renderRecent();
+  loadViewData('evidence');
+  renderRecent([]);
   renderBars();
   renderScenario();
-  renderTrace();
-  renderTimeline();
+  renderTrace([]);
+  renderTimeline([]);
 })();

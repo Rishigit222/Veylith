@@ -159,6 +159,7 @@ code { color: var(--blue-strong); font-size: .92em; }
 .breadcrumbs strong { color: var(--text); font-weight: 500; }
 .topbar-actions { display: flex; align-items: center; gap: 9px; }
 .connection-pill { display: flex; align-items: center; gap: 7px; margin-right: 8px; padding: 6px 9px; color: var(--emerald-strong); font: 9px var(--mono); background: var(--emerald-soft); border: 1px solid var(--border-strong); border-radius: 999px; }
+.connection-pill.offline { color: var(--red); background: #FEF2F2; }
 .connection-pill .mono { color: var(--text-muted); }
 
 .icon-button {
@@ -356,6 +357,7 @@ h3 { color: var(--text); }
 .trace-stream { min-height: 410px; padding: 0 18px 18px; }
 .trace-stream.loading { opacity: .55; }
 .trace-line { display: grid; grid-template-columns: 68px 76px minmax(0, 1fr) 20px; align-items: start; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+.trace-line.violation { background: #FFF7ED; }
 .trace-line .time, .trace-line .kind { color: var(--text-muted); font: 9px var(--mono); }
 .trace-line .kind { color: var(--blue-strong); }
 .trace-line .kind.authority { color: var(--blue-strong); }
@@ -367,6 +369,7 @@ h3 { color: var(--text); }
 .assertion-list { padding: 0 18px; }
 .assertion { display: flex; align-items: flex-start; gap: 9px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .assertion > i { display: grid; width: 17px; height: 17px; flex: 0 0 auto; place-items: center; color: var(--emerald-strong); font-style: normal; font-size: 10px; background: var(--emerald-soft); border-radius: 50%; }
+.assertion > i.failed { color: var(--red); background: #FEF2F2; }
 .assertion > span { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .assertion b { color: var(--text); font: 10px var(--mono); }
 .assertion small { color: var(--text-muted); font-size: 10px; line-height: 1.4; }

@@ -11,6 +11,25 @@ event IDs, stale approvals/evidence, and execution authorization. Keeping
 these implementations separate makes disagreement a useful diagnostic rather
 than a circular result.
 
+Verifier state is workflow-scoped: action, approval, and evidence records use a
+stable length-prefixed workflow/local keys, so identical local IDs in different workflows
+cannot overwrite one another or reuse authorization. `ACTION_CANCELLED` is a
+terminal lifecycle transition and execution after cancellation is reported as a
+structured `execution_after_cancellation` violation and blocked from protected
+state. Invalid approval expiry payloads and empty traces also return verifier
+findings instead of raising runtime conversion errors.
+
+`enforce_temporal` is fail-closed at the protected commit boundary. Once an
+ordering, reference, malformed-payload, or conflicting-duplicate finding enters
+the prefix, later execution events are quarantined instead of being applied to
+protected state. Identical duplicate delivery is retained as an idempotent
+forensic no-op; conflicting reuse of an event ID is quarantined.
+
+Scenario replay routes share one response contract containing the catalog metadata,
+raw event stream, trace projection, baseline result, verifier result, counterexample,
+enforcement outcome, and evidence export. This keeps the web and mobile clients
+from reconstructing product truth from local fixtures.
+
 The scenario module is a simulator only. It creates synthetic streams and has
 no effect on the Ring adapter. Ring calls are isolated in `chronicle_guard.ring`
 and use a server-side `RING_ACCESS_TOKEN` only. The documented operations are:

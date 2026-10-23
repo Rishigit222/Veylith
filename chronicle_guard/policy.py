@@ -13,12 +13,13 @@ def evaluate_baseline(events, action_id: str | None = None) -> PolicyDecision:
     the verifier's independent concern.
     """
     state: GuardState = replay(events)
-    target = action_id or (next(iter(state.actions)) if state.actions else "")
+    target = action_id or (next(iter(state.actions.values())).action_id if state.actions else "")
     reasons: list[str] = []
     if not target:
         reasons.append("action_not_requested")
         return PolicyDecision(allowed=False, action_id=target, reasons=reasons)
-    if target not in state.actions:
+    action_records = [action for action in state.actions.values() if action.action_id == target]
+    if not action_records:
         reasons.append("action_not_requested")
     action_approvals = [a for a in state.approvals.values() if a.action_id == target]
     if not action_approvals:
