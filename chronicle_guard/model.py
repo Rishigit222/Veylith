@@ -6,6 +6,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+def scope_key(workflow_id: str, entity_id: str) -> str:
+    """Return a stable, unambiguous key for workflow-owned state."""
+    return f"{len(workflow_id)}:{workflow_id}:{entity_id}"
+
+
 class EventKind(StrEnum):
     ACTION_REQUESTED = "action_requested"
     APPROVAL_GRANTED = "approval_granted"
@@ -51,6 +56,7 @@ class Event(BaseModel):
 
 
 class Approval(BaseModel):
+    workflow_id: str = Field(default="wf-demo", min_length=1)
     approval_id: str
     action_id: str
     actor: str
@@ -59,15 +65,20 @@ class Approval(BaseModel):
 
 
 class ActionRecord(BaseModel):
+    workflow_id: str = "wf-demo"
     action_id: str
     requested_at: int
     requested_by: str
     executed_at: int | None = None
     executed_by: str | None = None
     execution_event_id: str | None = None
+    cancelled_at: int | None = None
+    cancelled_by: str | None = None
+    cancellation_event_id: str | None = None
 
 
 class EvidenceRecord(BaseModel):
+    workflow_id: str = "wf-demo"
     evidence_id: str
     action_id: str
     recorded_at: int
@@ -105,7 +116,7 @@ class VerificationResult(BaseModel):
     violations: list[Violation] = Field(default_factory=list)
     checked_event_ids: list[str] = Field(default_factory=list)
     first_violation_event_id: str | None = None
-    verifier_version: str = "0.2.0"
+    verifier_version: str = "0.3.0"
 
 
 class ReplayRequest(BaseModel):

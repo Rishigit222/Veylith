@@ -151,6 +151,17 @@ baseline policy. The current implementation detects:
 - Execution without a request.
 - Untrusted-instruction events attempting to change authorization behavior.
 
+Authorization state is workflow-scoped, cancellation is terminal, and malformed
+approval expiry values are returned as structured findings rather than crashing
+the verification boundary. Empty traces are rejected instead of being treated as
+successful assurance results.
+
+Protected enforcement is fail-closed: invalid ordering, references, malformed
+payloads, and conflicting event-ID reuse quarantine the bad prefix and prevent a
+later execution from reaching protected state. Identical duplicate delivery is
+idempotent. The web and mobile replay routes return one canonical response shape
+so clients do not need to invent scenario truth locally.
+
 The result includes `valid`, all violations, checked event IDs, the first
 violation event ID, and the verifier version. This is bounded explicit trace
 verification, not exhaustive model checking.
@@ -524,7 +535,7 @@ Representative verifier response shape:
   ],
   "checked_event_ids": ["e1", "e2", "e3", "e4", "e5"],
   "first_violation_event_id": "e4",
-  "verifier_version": "0.2.0"
+  "verifier_version": "0.3.0"
 }
 ```
 
@@ -753,10 +764,12 @@ The test suite includes:
   mapping.
 - CLI and local Uvicorn smoke checks recorded in `docs/test-report.md`.
 
-The latest recorded backend result is **29 passed** with one existing
-Starlette/httpx deprecation warning. Mobile TypeScript and Expo Doctor checks
-also passed. No browser automation, physical-device runtime test, public
-deployment test, or live Ring call was available in the current workspace.
+The latest local backend result is **37 passed** with existing Starlette/httpx
+deprecation warnings. Web JavaScript syntax, compile checks, and canonical
+scenario replay smoke checks also pass. Mobile dependency-backed checks remain
+blocked in this workspace because `apps/mobile/node_modules` is not installed;
+no browser automation, physical-device runtime test, public deployment test, or
+live Ring call is claimed.
 
 ## Evidence and auditability
 
